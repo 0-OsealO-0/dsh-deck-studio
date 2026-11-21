@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { detectPython, detectSkillRoot, runtimeInfo } from './lib/paths.mjs';
+import { detectPython, detectSkillRoot, installedFontFamilies, runtimeInfo } from './lib/paths.mjs';
 
 const PLUGIN_NAME = 'deck-studio';
 const PROVIDER_NAME = 'deck-studio';
@@ -461,6 +461,47 @@ function declaredSizesFromLock(lockText) {
   return sizes;
 }
 
+// The bundled spec_lock templates declare families (Source Han Sans SC TTF,
+// Smiley Sans Oblique, Glow Sans SC) that are not stock Windows fonts, so a
+// clean machine silently substitutes them. The quality gate only warns, and
+// our own audit used to read sizes only — nobody noticed until the PPTX was
+// opened elsewhere. Compare against what is actually installed.
+const GENERIC_FAMILIES = new Set([
+  'sans-serif',
+  'serif',
+  'monospace',
+  'system-ui',
+  'cursive',
+  'fantasy',
+  'ui-sans-serif',
+  'ui-serif',
+  'ui-monospace',
+  '-apple-system',
+  'emoji',
+  'math',
+]);
+const FAMILY_LINE_RE = /^\s*[-*]\s*([A-Za-z][\w \-]*?)\s*[:：]\s*(.+?)\s*$/;
+
+function declaredFamiliesFromLock(lockText) {
+  const families = new Set();
+  let insideTypography = false;
+  for (const rawLine of String(lockText || '').split(/\r?\n/)) {
+    const heading = rawLine.match(/^##\s+(.+?)\s*$/);
+    if (heading) {
+      insideTypography = /typography/i.test(heading[1]);
+      continue;
+    }
+    if (!insideTypography) continue;
+    const match = rawLine.match(FAMILY_LINE_RE);
+    if (!match || !/family/i.test(match[1])) continue;
+    for (const part of match[2].split(',')) {
+      const name = part.trim().replace(/^["']|["']$/g, '');
+      if (name && !GENERIC_FAMILIES.has(name.toLowerCase())) families.add(name);
+    }
+  }
+  return families;
+}
+
 function usedSizesFromSvg(svgText) {
   const counts = new Map();
   let match;
@@ -541,6 +582,23 @@ async function auditProject(project) {
     warnings.push('用了外部图片但没有 images/image_sources.json；授权、署名和 §7 页面署名契约都无从校验。');
   }
 
+  const declaredFamilies = declaredFamiliesFromLock(lockText);
+  if (declaredFamilies.size > 0) {
+    const installed = installedFontFamilies();
+    if (!installed) {
+      warnings.push('无法枚举本机已装字体，字体可用性没有校验。');
+    } else {
+      const missing = [...declaredFamilies].filter((family) => !installed.has(family.toLowerCase()));
+      if (missing.length) {
+        notes.push({ kind: 'font-not-installed', detail: missing });
+        warnings.push(
+          `本机没装 spec_lock 声明的字体：${missing.join('、')}。` +
+            '预览和导出现在用的是替代字体，换一台机器会更明显地走样。',
+        );
+      }
+    }
+  }
+
   return { notes, warnings, declared: [...declared.entries()], used: [...used.entries()] };
 }
 
@@ -565,6 +623,63 @@ function qualityDigest(report) {  const digest = { counts: { errors: 0, warnings
   digest.counts.errors = digest.errors.length || Number(summary.errors ?? 0);
   digest.counts.warnings = digest.warnings.length || Number(summary.warnings ?? 0);
   return digest;
+}
+
+// vendor/ppt-master is vendored verbatim (MIT), so we do not patch its error
+// messages. Instead: our reports showed the same five failures over and over,
+// each with a fix that is not obvious from the message. Map message → fix.
+const FIX_HINTS = [
+  {
+    match: /non-PPT-safe typeface/i,
+    hint:
+      'font-family 里出现中文族名或非 PPT 安全字体：换成英文族名（Microsoft YaHei / SimSun / Arial）。' +
+      '导出后 fix-pptx-cjk-fonts.py 会按 spec_lock 补 a:ea，中文不会掉字。',
+  },
+  {
+    match: /unknown data-pptx-role/i,
+    hint:
+      'data-pptx-role 只接受 background / chrome / decoration / footer / header / logo / page-number / watermark ' +
+      '八个结构角色；标题文字不需要这个属性，删掉即可。',
+  },
+  {
+    match: /unsupported or unresolved geometry|Cannot verify root viewBox bounds/i,
+    hint:
+      '文字几何算不出来：tspan 一旦自带 y 或 dy 就必须同时带 x，坐标与 letter-spacing 也不能用百分比。' +
+      '给每行补 x，或拆成各自带 x 的 <text>。',
+  },
+  {
+    match: /without explicit data-pptx-bounds/i,
+    hint: '根级 <g> 要显式写 data-pptx-bounds="x y w h"，否则导出后位置会漂。',
+  },
+  {
+    match: /ungrouped top-level Slide-local element/i,
+    hint:
+      '顶层散元素要包进带 id 的 <g>；静态页框（底色、页脚、页码）声明 data-pptx-role 之后，' +
+      '导出器才会把它转成背景/装饰层。',
+  },
+  {
+    match: /本机没装 spec_lock 声明的字体/i,
+    hint:
+      '把 spec_lock 的 font_family 换成本机已有的字体栈（Microsoft YaHei / SimSun / Arial），' +
+      '或先装上这三款；否则预览看着正常、换台机器就换字。',
+  },
+];
+
+function fixHintFor(line) {
+  const text = String(line || '');
+  for (const entry of FIX_HINTS) {
+    if (entry.match.test(text)) return entry.hint;
+  }
+  return '';
+}
+
+function hintsFor(lines) {
+  const hints = [];
+  for (const line of lines) {
+    const hint = fixHintFor(line);
+    if (hint && !hints.includes(hint)) hints.push(hint);
+  }
+  return hints;
 }
 
 async function runVisualReview(config, project, signal) {
@@ -1123,6 +1238,7 @@ async function actionCheck(config, project, args) {
     blockers.push(detail);
   }
   const ok = quality.code === 0 && blockers.length === 0;
+  const hints = hintsFor([...digest.errors, ...digest.warnings, ...audit.warnings]);
   const errorLines = digest.errors.slice(0, 5).map((line) => `- ${clampText(line, 400)}`);
   const auditLines = audit.warnings.slice(0, 4).map((line) => `· ${clampText(line, 300)}`);
   const blockerLines = blockers.map((line) => `- ${clampText(line, 500)}`);
@@ -1138,6 +1254,9 @@ async function actionCheck(config, project, args) {
     message = `质量门通过${digest.counts.warnings ? `（${digest.counts.warnings} 条 warning，可解释即可）` : ''}。${reviewed}`;
   }
   if (auditLines.length) message += `\n补充自查：\n${auditLines.join('\n')}`;
+  if (hints.length) {
+    message += `\n常见改法：\n${hints.slice(0, 4).map((hint) => `· ${hint}`).join('\n')}`;
+  }
   return {
     ok,
     action: 'check',
@@ -1152,6 +1271,7 @@ async function actionCheck(config, project, args) {
       report: quality.report?.summary ?? quality.report?.status ?? null,
       errors: digest.errors,
       warnings: [...digest.warnings, ...audit.warnings],
+      hints,
       blockers,
       audit,
       previews,
@@ -1403,7 +1523,10 @@ function deckTool(config) {
       option: {
         type: 'string',
         description:
-          'Direction id returned by action=propose (e.g. warm-paper / ink-water / desert-ochre). ' +
+          'Direction id returned by action=propose — copy the id from that result, never guess. ' +
+          'Ids differ per profile: formal (navy-brief / graphite-orange / paper-stamp), ' +
+          'campaign (warm-orange / neon-cyan / black-gold), ' +
+          'literary (warm-paper / ink-water / desert-ochre). ' +
           'Pass it to init so spec_lock colors and the direction note follow the choice.',
       },
       force: {

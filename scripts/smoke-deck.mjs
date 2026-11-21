@@ -95,7 +95,17 @@ try {
   const optionsFile = path.join(project, 'confirm_ui', 'direction_options.json');
   record('propose 落盘了 confirm_ui/direction_options.json', await exists(optionsFile));
   const options = propose?.data?.options ?? [];
-  record('propose 给出三个方向', options.length === 3, `实际 ${options.length}`);
+  record(
+    'propose 给出三个方向',
+    options.length === 3,
+    `实际 ${options.length}`,
+  );
+  const optionDoc = String(tool?.parameters?.option?.description ?? '');
+  record(
+    'option 说明按 profile 分组举例（含 campaign 的 id）',
+    optionDoc.includes('warm-orange') && optionDoc.includes('navy-brief') && optionDoc.includes('warm-paper'),
+    optionDoc.slice(0, 160),
+  );
 
   // 2. init
   const init = await tool.execute(
@@ -112,7 +122,7 @@ try {
   //    times, and an <image> whose file is missing.
   await fs.appendFile(
     path.join(project, 'spec_lock.md'),
-    '\n## Typography\n- 冒烟标题: 120\n- 冒烟正文: 40\n',
+    '\n## Typography\n- 冒烟标题: 120\n- 冒烟正文: 40\n- smoke_family: Definitely Missing Font 123\n',
     'utf8',
   );
   await fs.mkdir(path.join(project, 'svg_output'), { recursive: true });
@@ -120,7 +130,7 @@ try {
     path.join(project, 'svg_output', '01_cover.svg'),
     `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
   <rect width="1280" height="720" fill="#F6F0E4"/>
-  <text x="80" y="120" font-size="37" fill="#241F1A">冒烟标题一</text>
+  <text x="80" y="120" font-size="37" font-family="微软雅黑" fill="#241F1A">冒烟标题一</text>
   <text x="80" y="200" font-size="37" fill="#241F1A">冒烟标题二</text>
   <text x="80" y="280" font-size="37" fill="#241F1A">冒烟标题三</text>
   <image href="missing-photo.png" x="80" y="320" width="400" height="300"/>
@@ -147,6 +157,22 @@ try {
     'audit 抓到缺失图片',
     auditWarnings.some((line) => String(line).includes('图片缺失')),
     auditWarnings.slice(0, 2).join(' | '),
+  );
+  record(
+    'audit 抓到本机没装的声明字体',
+    auditWarnings.some((line) => String(line).includes('本机没装')),
+    auditWarnings.slice(0, 3).join(' | '),
+  );
+  const hints = checked?.data?.hints ?? [];
+  record(
+    '质量门报错带出了改法提示（中文族名 → Microsoft YaHei）',
+    hints.some((hint) => String(hint).includes('Microsoft YaHei')),
+    hints.join(' | ').slice(0, 200),
+  );
+  record(
+    'check 的 message 里有「常见改法」段',
+    String(checked?.message ?? '').includes('常见改法'),
+    String(checked?.message ?? '').slice(-160),
   );
 
   // 4. review without a live-preview server must be a visible failure, not a

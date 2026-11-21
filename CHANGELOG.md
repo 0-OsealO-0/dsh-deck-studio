@@ -11,6 +11,15 @@
 - `status` 增加 `data.previewServer`（来自新增的 `livePreviewState()`）与 `data.runtime.visualReview`（`lib/paths.mjs` 新增 `detectVisualReview()`，探测 `import playwright.sync_api`）；缺 playwright 时 message 直接给安装命令。
 - 新增 `scripts/smoke-deck.mjs`：用 stub 绕过 DSH-only 依赖，驱动真实 action，逐项校验返回值符合 `deckOutput().schema`，并用故意留的两个缺陷（37px 未登记字号、缺失 `<image href>`）证明自查真的在跑、`review` 无服务时确实 `ok=false`。`node scripts/smoke-deck.mjs`。
 
+### 来自外部实测报告的第二轮修补
+
+另一位使用者（v0.1.1，另一台机器）独立提交了 `插件问题清单.md`，五条里三条与上面的 bug 重合、两条是新增，核对后补进来：
+
+- `option` 参数说明改为按 profile 分组举例（`navy-brief`/`warm-orange`/`warm-paper` 等九个），并写明"从 propose 结果里抄 id，不要猜"。原说明只举了 literary 的三个，campaign 用户照抄必然拿到不存在的方向。
+- 新增字体可用性自查：`auditProject` 解析 `spec_lock.md` typography 段里的 `*_family`，与本机已装字体比对，缺字体时报 `font-not-installed`。模板默认的 `Source Han Sans SC TTF` / `Smiley Sans Oblique` / `Glow Sans SC Normal TTF` 都不是 Windows 自带字体，原先只有质量门的 warning 且 `ok` 仍为 true，导致"预览看着正常、换台机器换字"。探测在 `lib/paths.mjs#installedFontFamilies()`，懒执行 + 缓存；同名坑记在注释里——PowerShell 输出要走 UTF-8，且 `InstalledFontCollection` 给的是本地化名（微软雅黑），必须再用 `GetName(1033)` 取英文名（Microsoft YaHei），否则所有中文字体都会被误报为"没装"。
+- `check` 的报错附带改法：新增 `data.hints` 与 message 里的「常见改法」段，把四类高频硬伤映射成动作——非 PPT 安全字体（中文族名换英文族名 + 导出后补 `a:ea`）、非法 `data-pptx-role`（只接受八个结构角色）、几何无法解析（`tspan` 带 `y`/`dy` 必须带 `x`，坐标与字距不能用百分比）、顶层散元素未分组。`vendor/` 保持 MIT 原样不改。
+- 冒烟扩到 20 项，新增断言：`option` 说明含 campaign 的 id、audit 能抓到本机没装的声明字体、报错能带出改法提示。
+
 ## 0.1.1 — 内容红队进流程
 
 - 新增 `skills/deck-studio/SKILL.md` §2.4 大纲红队（写 SVG 之前，不可跳过）：每页写「主张 / 支撑 / 反问」三行进 `slide_claims.md`，用四个问题攻击（删页损失什么、数字哪来的、听众第一个反问、只讲三页留哪三页）；一页两主张即拆页；8 页以上、答辩或评优必做，纯活动通知可跳过但要在交付说明里写明。
