@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.tmp/
+__pycache__/
+*.pyc
+*.pyo
+*.zip
+*.log
+*.bak
+*.bak-*
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

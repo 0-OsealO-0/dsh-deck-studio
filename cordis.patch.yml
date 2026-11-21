@@ -1,0 +1,3 @@
+- insert:
+    - id: deck-studio
+      name: '@local/dsh-deck-studio'

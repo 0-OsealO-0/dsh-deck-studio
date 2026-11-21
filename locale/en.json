@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Deck Studio (dsh-deck-studio)",
+    "description": "One plugin for the full PPT / HTML deck pipeline: scaffold, quality gate, export, animation, and CJK font repair.",
+    "detail": "README.md"
+  }
+}

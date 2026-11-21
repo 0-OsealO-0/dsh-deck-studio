@@ -1,0 +1,50 @@
+{
+  "name": "@local/dsh-deck-studio",
+  "version": "0.1.1",
+  "private": true,
+  "description": "DSH deck studio: an opinionated PPT/HTML deck pipeline with fonts, quality gates, animation and export.",
+  "icon": "icon.svg",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "vendor",
+    "cordis.patch.yml",
+    "icon.svg",
+    "locale",
+    "skills",
+    "templates",
+    "scripts",
+    "README.md",
+    "INSTALL.md",
+    "CHANGELOG.md",
+    "THIRD_PARTY.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deck",
+    "pptx",
+    "presentation",
+    "svg",
+    "slides"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-skill": "^0.1.5-rc.3 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.1-rc.3",
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.3 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.1-rc.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
