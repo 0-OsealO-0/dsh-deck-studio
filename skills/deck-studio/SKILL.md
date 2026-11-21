@@ -130,7 +130,8 @@ deck(action="check", project="...", review=true)
 
 - 跑 `svg_quality_checker.py --stage final --json`；ERROR 必须修，WARN 可解释。未通过时 `check` 会把前几条 ERROR 直接打在 message 里，`data.errors` / `data.warnings` 是全量数组，不用自己解析 JSON。
 - `check` 还会补一层自有自查（`data.audit`）：未登记字号的使用次数、`<image href>` 指向的文件是否存在、图片是不是小于 2KB 的失败占位、用到的图有没有登记进 `images/image_sources.json`。这些是 python 质量门容易静默放过的部分。
-- `review=true` 额外跑 `visual_review.py` 出 PNG，放在 `.preview/`。先看渲染，再导出。
+- `review=true` 额外跑 `visual_review.py` 出 PNG，放在 `.preview/`。先看渲染，再导出。它要两样东西同时在：python 里 `import playwright` 能过，且项目内有存活的 live-preview 服务（`live_preview/lock.json`，由 `scripts/svg_editor/server.py` 写出）。缺任何一样，`check` 返回 `ok=false`，原因写进 `data.blockers`——这是有意的，没回渲就不算验收通过，别当成"通过但有 warning"。
+- 开工前先 `deck(action="status")`：`data.runtime.visualReview.playwright` 与 `data.previewServer.running` 会直接告诉你回渲能不能跑，不用等 `check` 才发现缺环境。
 - 常见硬伤：文字溢出、对比度不足、一页超过 3 个视觉层级、标题换行难看、图片被拉伸、字号没登记、配图缺署名。
 - **这道门不是全部**：`check` 通过只说明结构和可读性没硬伤，不说明内容值得讲。交付前还要按
   `~/.dsh/AGENTS.md`「演示文稿与网页交付」的三条走——内容红队（§2.4）、本门、以及**在投影

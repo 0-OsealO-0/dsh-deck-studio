@@ -255,6 +255,29 @@ async function listDir(dir) {
   }
 }
 
+// visual_review.py only recovers the preview URL from a project-local lock file,
+// and the plugin never passes --server-url. So a missing lock or a dead pid means
+// the render can never succeed; check it up front instead of burning a 240s
+// python timeout on an exit code nobody reads.
+async function livePreviewState(project) {
+  for (const lockPath of [
+    path.join(project, 'live_preview', 'lock.json'),
+    path.join(project, '.live_preview.lock'),
+  ]) {
+    const lock = await readJson(lockPath);
+    const pid = Number(lock?.pid ?? 0);
+    if (!pid) continue;
+    const state = { pid, port: Number(lock?.port) || null, lockPath };
+    try {
+      process.kill(pid, 0);
+      return { running: true, ...state };
+    } catch {
+      return { running: false, ...state };
+    }
+  }
+  return { running: false, pid: null, port: null, lockPath: null };
+}
+
 async function fileBytes(file) {
   try {
     return (await fs.stat(file)).size;
@@ -461,7 +484,10 @@ async function auditProject(project) {
   const used = new Map();
   const imageHrefs = new Map();
   for (const file of svgFiles) {
-    const text = await readText(file);
+    // listSvg returns bare file names; resolve them against svg_output/
+    // explicitly. `readText(name)` used to resolve against the host process
+    // cwd, so this loop threw ENOENT on the first page for every project.
+    const text = await readText(path.join(project, 'svg_output', file));
     for (const [size, count] of usedSizesFromSvg(text)) {
       used.set(size, (used.get(size) || 0) + count);
     }
@@ -847,10 +873,16 @@ async function actionPropose(config, project, args) {
     '',
     '把这三条原样给用户选；用户选定后调用 deck action=init option=<id>，配色与方向说明会写进 spec_lock.md。',
   ];
+  // Shape must match deckOutput().schema exactly: ok/action/project/message.
+  // Returning the legacy { content, data, artifacts } shape made every first
+  // `propose` call fail validation *after* the JSON had already been written.
   return {
-    content: [{ type: 'text', text: lines.join('\n') }],
-    data: { profile, file, decision: 'ask_user_before_init', options },
+    ok: true,
+    action: 'propose',
+    project,
+    message: lines.join('\n'),
     artifacts: [await artifact('direction-options', file)],
+    data: { profile, file, decision: 'ask_user_before_init', options },
   };
 }
 
@@ -1010,14 +1042,22 @@ async function actionStatus(config, project) {
   for (const file of htmlFiles) artifacts.push(await artifact('html', path.join(project, 'exports', file)));
   for (const file of previews) artifacts.push(await artifact('preview', path.join(project, '.preview', file)));
 
+  const runtime = runtimeInfo();
+  const previewServer = await livePreviewState(project);
+  // Say it here, not only when check(review=true) fails: a missing playwright
+  // turns visual review into a no-op, and that must be visible before the work.
+  const reviewHint = runtime.visualReview?.playwright
+    ? ''
+    : '\n视觉回渲不可用：python 里没有 playwright，check(review=true) 会返回 ok=false。安装：pip install playwright && python -m playwright install chromium';
+
   return {
     ok: missing.length === 0,
     action: 'status',
     project,
     message:
-      missing.length === 0
+      (missing.length === 0
         ? `项目可用：${svgs.length} 页 SVG，spec_lock 已就绪。`
-        : `还缺：${missing.join(', ')}。`,
+        : `还缺：${missing.join(', ')}。`) + reviewHint,
     artifacts,
     data: {
       svgCount: svgs.length,
@@ -1029,7 +1069,8 @@ async function actionStatus(config, project) {
       exports: exports_,
       previews,
       missing,
-      runtime: runtimeInfo(),
+      previewServer,
+      runtime,
     },
   };
 }
@@ -1041,14 +1082,30 @@ async function actionCheck(config, project, args) {
   }
   const quality = await runQuality(config, project, args.__signal);
   const previews = [];
-  let reviewError = '';
+  // Anything that should have run but did not belongs in blockers: a green
+  // gate on a half-run validation is worse than a red one.
+  const blockers = [];
   if (args.review) {
-    try {
-      const review = await runVisualReview(config, project, args.__signal);
-      previews.push(...review.previews);
-      if (review.code !== 0) reviewError = clampText(review.stderr || review.stdout, 2000);
-    } catch (error) {
-      reviewError = String(error?.message || error);
+    const live = await livePreviewState(project);
+    if (!live.running) {
+      blockers.push(
+        '视觉回渲未执行：没有检测到本项目的 live-preview 服务（缺 live_preview/lock.json，或记录里的进程已退出）。' +
+          '先启动 scripts/svg_editor/server.py，再重跑 review=true。',
+      );
+    } else {
+      let reviewError = '';
+      try {
+        const review = await runVisualReview(config, project, args.__signal);
+        previews.push(...review.previews);
+        if (review.code !== 0) {
+          reviewError = clampText(review.stderr || review.stdout, 1200) || `exit ${review.code}`;
+        } else if (review.previews.length === 0) {
+          reviewError = 'visual_review 退出码 0，但 .preview/ 里没有 PNG。';
+        }
+      } catch (error) {
+        reviewError = String(error?.message || error);
+      }
+      if (reviewError) blockers.push(`视觉回渲未执行：${reviewError}`);
     }
   }
 
@@ -1056,27 +1113,36 @@ async function actionCheck(config, project, args) {
   if (await exists(quality.reportPath)) artifacts.push(await artifact('quality-report', quality.reportPath));
   for (const file of previews) artifacts.push(await artifact('preview', file));
 
-  const ok = quality.code === 0;
   const digest = qualityDigest(quality.report);
   let audit = { notes: [], warnings: [] };
   try {
     audit = await auditProject(project);
   } catch (error) {
-    audit.warnings.push(`项目自查未执行：${String(error?.message || error)}`);
+    const detail = `项目自查未执行：${String(error?.message || error)}`;
+    audit.warnings.push(detail);
+    blockers.push(detail);
   }
+  const ok = quality.code === 0 && blockers.length === 0;
   const errorLines = digest.errors.slice(0, 5).map((line) => `- ${clampText(line, 400)}`);
   const auditLines = audit.warnings.slice(0, 4).map((line) => `· ${clampText(line, 300)}`);
+  const blockerLines = blockers.map((line) => `- ${clampText(line, 500)}`);
+  const reviewed = previews.length ? `已回渲 ${previews.length} 页。` : '';
+  let message;
+  if (quality.code !== 0) {
+    message = `质量门未通过（${digest.counts.errors} 个 ERROR）：\n${errorLines.join('\n')}${
+      digest.counts.errors > errorLines.length ? `\n……其余见 ${quality.reportPath}` : ''
+    }`;
+  } else if (!ok) {
+    message = `质量门通过，但验收没跑完（${blockers.length} 项）：\n${blockerLines.join('\n')}\n据此不要说“可以交付了”。`;
+  } else {
+    message = `质量门通过${digest.counts.warnings ? `（${digest.counts.warnings} 条 warning，可解释即可）` : ''}。${reviewed}`;
+  }
+  if (auditLines.length) message += `\n补充自查：\n${auditLines.join('\n')}`;
   return {
     ok,
     action: 'check',
     project,
-    message: ok
-      ? `质量门通过${digest.counts.warnings ? `（${digest.counts.warnings} 条 warning，可解释即可）` : ''}。${previews.length ? `已回渲 ${previews.length} 页。` : ''}${
-          auditLines.length ? `\n补充自查：\n${auditLines.join('\n')}` : ''
-        }`
-      : `质量门未通过（${digest.counts.errors} 个 ERROR）：\n${errorLines.join('\n')}${
-          digest.counts.errors > errorLines.length ? `\n……其余见 ${quality.reportPath}` : ''
-        }${auditLines.length ? `\n补充自查：\n${auditLines.join('\n')}` : ''}`,
+    message,
     artifacts,
     data: {
       exitCode: quality.code,
@@ -1086,9 +1152,9 @@ async function actionCheck(config, project, args) {
       report: quality.report?.summary ?? quality.report?.status ?? null,
       errors: digest.errors,
       warnings: [...digest.warnings, ...audit.warnings],
+      blockers,
       audit,
       previews,
-      reviewError,
     },
   };
 }

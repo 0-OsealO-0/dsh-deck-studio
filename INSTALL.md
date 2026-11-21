@@ -36,7 +36,7 @@ plugin_manager(action="install_bundle", target="D:\\plugins\\dsh-deck-studio")
 **方式 B：从 Git 仓库**
 
 ```text
-plugin_manager(action="install_bundle", target="git+https://github.com/0-OsealO-0/dsh-deck-studio.git#v0.1.1")
+plugin_manager(action="install_bundle", target="git+https://github.com/0-OsealO-0/dsh-deck-studio.git#v0.1.2")
 ```
 
 **方式 C：开发模式（本机路径）**
@@ -154,7 +154,7 @@ plugin_manager(action="install_bundle", target="D:\\plugins\\dsh-deck-studio")
 **B. Git**
 
 ```text
-plugin_manager(action="install_bundle", target="git+https://github.com/0-OsealO-0/dsh-deck-studio.git#v0.1.1")
+plugin_manager(action="install_bundle", target="git+https://github.com/0-OsealO-0/dsh-deck-studio.git#v0.1.2")
 ```
 
 ### 3. Verify
