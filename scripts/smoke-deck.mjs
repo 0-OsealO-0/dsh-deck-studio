@@ -187,9 +187,9 @@ try {
     String(brief0?.message ?? '').slice(0, 120),
   );
   record(
-    'brief 的 data 带 9 个原型与可编辑骨架',
+    'brief 的 data 带 10 个原型与可编辑骨架',
     Array.isArray(brief0?.data?.archetypes) &&
-      brief0.data.archetypes.length === 9 &&
+      brief0.data.archetypes.length === 10 &&
       Array.isArray(brief0?.data?.skeleton?.pages),
     JSON.stringify(brief0?.data?.archetypes ?? null),
   );
@@ -388,7 +388,7 @@ try {
     for (const archetype of ARCHETYPE_IDS) {
       try {
         const svg = renderPage(
-          { archetype, variant: 'impact', text: { title: '标题', kicker: '社团', headline: '标题一句话', metrics: ['4 场活动'], steps: ['一', '二', '三'], actions: ['一'], image: 'images/x.jpg', when: '11-24', where: '报告厅', cta: '扫码报名' } },
+          { archetype, variant: 'impact', text: { title: '标题', kicker: '社团', headline: '标题一句话', metrics: ['4 场活动'], bars: ['海报 18', '推文 9', '视频 3'], steps: ['一', '二', '三'], actions: ['一'], image: 'images/x.jpg', when: '11-24', where: '报告厅', cta: '扫码报名' } },
           { theme, pageNumber: 1, total: 1 },
         );
         if (!svg.includes('<svg') || svg.length < 200) themeFails.push(`${id}/${archetype}: 空`);
@@ -499,6 +499,34 @@ try {
     '二维码不接受外链',
     qrAudit.violations.some((item) => item.kind === 'media' && String(item.message).includes('二维码')),
     JSON.stringify(qrAudit.violations.map((item) => item.message)),
+  );
+
+  // 4b0e. chart: bars scale to the biggest value, and a bar without a number is
+  //       rejected by the audit before it can reach a projector.
+  const chartSvg = renderPage(
+    {
+      archetype: 'chart',
+      variant: 'impact',
+      text: { headline: '一学期的产出', bars: ['海报 18', '推文 9', '视频 3'], unit: '项', note: '海报占大头', source: '02-成品' },
+    },
+    { theme: getTheme('paper-stamp'), pageNumber: 1, total: 1 },
+  );
+  const barCount = (chartSvg.match(/id="chart-bar-\d"/g) ?? []).length;
+  const bar18 = /id="chart-bar-1"[^>]*height="([0-9.]+)"/.exec(chartSvg);
+  const bar3 = /id="chart-bar-3"[^>]*height="([0-9.]+)"/.exec(chartSvg);
+  record(
+    '图表页：3 根柱子，高度按数值成比例',
+    barCount === 3 && bar18 && bar3 && Number(bar18[1]) > Number(bar3[1]) * 3,
+    `${barCount} bars, ${bar18?.[1]} vs ${bar3?.[1]}`,
+  );
+  const chartAudit = auditPlan(
+    { version: 1, profile: 'formal', pages: [{ file: '03_chart.svg', archetype: 'chart', text: { headline: '产出', bars: ['海报 18', '推文很多', '视频 3'] } }] },
+    { svgFiles: ['03_chart.svg'], profile: 'formal', images: [] },
+  );
+  record(
+    '图表页缺数字的柱子被拦下',
+    chartAudit.violations.some((item) => item.kind === 'vague' && String(item.message).includes('柱子')),
+    JSON.stringify(chartAudit.violations.map((item) => item.message)).slice(0, 200),
   );
 
   // 4b1. takeawayAnchor: the comparison conclusion is pinned by a slot switch

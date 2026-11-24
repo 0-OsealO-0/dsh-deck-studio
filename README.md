@@ -6,7 +6,7 @@
 - `init`：建项目骨架（`source.md` / `design_spec.md` / `spec_lock.md` / `svg_output` / `exports`）；`option=<id>` 会把选中方向落进 `spec_lock`
 - `status`：看还缺什么，并报告当前探测到的 Python / ppt-master 路径
 - `brief`：给页面契约的槽位预算；有 `page_plan.json` 时逐页报「预算占用 / 超限」
-- `scaffold`：按契约把 9 个原型画成 SVG 草稿，主题七选一（`paper-stamp` / `navy-brief` / `blueprint-seu` / `neon-cyan` / `warm-sand` / `print-mono` / `ink-water`），并把字号阶梯同步进 `spec_lock.md`
+- `scaffold`：按契约把 10 个原型画成 SVG 草稿，主题七选一（`paper-stamp` / `navy-brief` / `blueprint-seu` / `neon-cyan` / `warm-sand` / `print-mono` / `ink-water`），并把字号阶梯同步进 `spec_lock.md`
 - `edit`：生成单文件浏览器编辑器（无服务端），改文案、切版式强度与主题，保存时直接写回 `page_plan.json` 与 `svg_output/`
 - `check`：跑 SVG 质量门 + 自有自查（字号 / 图片 / 字体）+ 页面契约字数审计，可选 `visual_review` 回渲 PNG
 - `export`：SVG → 可编辑 PPTX，自动修中文字体；若已有 `animations.json` 会自动注入动画；可选 PDF/PNG，`mixed=true` 走混合导出（背景栅格化 + 原生文字）；项目里有 `native_plan.json` 时另存一份 `-native.pptx`，把学院模板的原生封面/目录/3D/视频页拼进去
@@ -64,7 +64,7 @@ deck(action="animate", project="D:\\work\\demo", profile="formal")
 
 改文案不用碰 SVG（SKILL.md §2.3b）：`deck(action="edit", project=…)` 生成 `exports/<标题>-edits.html`，Chrome/Edge 打开后选一次项目目录即可保存，写出的 SVG 与 `scaffold` 逐字节相同。
 
-不想每页从零排，就让插件先出草稿页（SKILL.md §2.3a）：`deck(action="scaffold", project=…, theme="blueprint-seu")`。9 个原型 × 2 个变体（`impact` / `density`）× 7 套主题，同一份 `page_plan.json` 换 `theme` 就是另一套版面语言；已存在的 SVG 默认不覆盖，`force=true` 才重画。骨架只管版面关系，不替你判断内容值不值得讲。
+不想每页从零排，就让插件先出草稿页（SKILL.md §2.3a）：`deck(action="scaffold", project=…, theme="blueprint-seu")`。10 个原型 × 2 个变体（`impact` / `density`）× 7 套主题，同一份 `page_plan.json` 换 `theme` 就是另一套版面语言；已存在的 SVG 默认不覆盖，`force=true` 才重画。骨架只管版面关系，不替你判断内容值不值得讲。
 
 要放照片（SKILL.md §2.3c）：`cover` 写可选 `image`、`image` 原型写必填 `image`，值用 `images/photo.jpg`；编辑器里有「选图…」。背景里有转换器保不住的东西时，`export(mixed=true)` 把背景栅格化、文字保持可编辑，代价是体积约 3.6×（4 页 21 KB → 75 KB）。
 

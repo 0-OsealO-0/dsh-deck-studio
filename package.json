@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-deck-studio",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "private": true,
   "description": "DSH deck studio: an opinionated PPT/HTML deck pipeline with fonts, quality gates, animation and export.",
   "icon": "icon.svg",

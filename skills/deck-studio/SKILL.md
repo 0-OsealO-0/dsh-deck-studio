@@ -84,7 +84,7 @@ exports/           PPTX / PDF / HTML
 3. 按预算写文案，再画 SVG。
 4. `deck(action="check")` 会逐槽核对字数与条数；超限进 `data.blockers`（`ok=false`），先改文案或拆页，**不要缩字号**——字号改了排版关系就散了。
 
-9 个原型（`data.archetypes`，槽位上限以 `brief` 输出为准）：
+10 个原型（`data.archetypes`，槽位上限以 `brief` 输出为准）：
 
 | 原型 | 用途 | 必填槽位 |
 | --- | --- | --- |
@@ -94,6 +94,7 @@ exports/           PPTX / PDF / HTML
 | `image` | 图文页：左文右图，图用 `images/` 里的文件 | `headline`、`image` |
 | `hero` | 招新/预告大图页：整页照片 + 主张 + 时间地点 + 报名号召 | `kicker`、`title`、`when`、`where`、`cta`、`image` |
 | `metrics` | 数据页：2–4 个指标，每个必须带数字 | `headline`、`metrics` |
+| `chart` | 图表页：3–6 根柱子比构成，每条「标签 数值」 | `headline`、`bars` |
 | `comparison` | 对比页：两边各一句标题 + 取舍 | `headline`、`leftTitle`、`rightTitle` |
 | `process` | 流程页：3–5 步 | `headline`、`steps` |
 | `closing` | 结尾页：下一步 + 联系人 | `headline`、`actions` |
@@ -124,7 +125,7 @@ exports/           PPTX / PDF / HTML
 
 ### 2.3a 骨架与主题（可选：让插件出草稿页）
 
-`page_plan.json` 写完之后，可以让插件直接把这 9 个原型画成 SVG 草稿，省掉「每页从零排」：
+`page_plan.json` 写完之后，可以让插件直接把这 10 个原型画成 SVG 草稿，省掉「每页从零排」：
 
 ```text
 deck(action="scaffold", project="...", theme="blueprint-seu")
