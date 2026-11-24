@@ -465,6 +465,42 @@ try {
     JSON.stringify(noticeAudit.violations.map((item) => item.message)),
   );
 
+  // 4b0d. qr: a signup QR is a white card with a dark label, on both the hero
+  //       and the notice, and the label colour must not follow the theme.
+  const qrHero = renderPage(
+    {
+      archetype: 'hero',
+      variant: 'impact',
+      text: { kicker: '招新', title: '秋季招新', when: '11-28 19:00', where: '人文楼 302', cta: '扫码报名', image: 'images/x.jpg', qr: 'images/qr.png', qrLabel: '扫码填表' },
+    },
+    { theme: getTheme('neon-cyan'), pageNumber: 1, total: 1 },
+  );
+  const qrNotice = renderPage(
+    {
+      archetype: 'notice',
+      variant: 'impact',
+      text: { title: '征稿延期', when: '11-20', where: '线上', who: '全院', contact: '找学术部', qr: 'images/qr.png', qrLabel: '扫码投稿' },
+    },
+    { theme: getTheme('ink-water'), pageNumber: 1, total: 1 },
+  );
+  record(
+    '二维码：白卡 + 深色标签（hero 与 notice 都支持）',
+    qrHero.includes('id="qr-card"') &&
+      qrHero.includes('fill=\"#1B2430\"') &&
+      qrNotice.includes('id="qr-card"') &&
+      qrNotice.includes('href=\"../images/qr.png\"'),
+    qrHero.slice(0, 100),
+  );
+  const qrAudit = auditPlan(
+    { version: 1, profile: 'campaign', pages: [{ file: '01_hero.svg', archetype: 'hero', text: { kicker: 'x', title: '招新', when: '11-28', where: '302', cta: '报名', image: 'images/x.jpg', qr: 'https://example.com/qr.png' } }] },
+    { svgFiles: ['01_hero.svg'], profile: 'campaign', images: ['images/x.jpg'] },
+  );
+  record(
+    '二维码不接受外链',
+    qrAudit.violations.some((item) => item.kind === 'media' && String(item.message).includes('二维码')),
+    JSON.stringify(qrAudit.violations.map((item) => item.message)),
+  );
+
   // 4b1. takeawayAnchor: the comparison conclusion is pinned by a slot switch
   //      instead of only by leftover space, so a page can force either reading.
   const cmp = {

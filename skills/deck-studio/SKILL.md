@@ -98,6 +98,8 @@ exports/           PPTX / PDF / HTML
 | `process` | 流程页：3–5 步 | `headline`、`steps` |
 | `closing` | 结尾页：下一步 + 联系人 | `headline`、`actions` |
 
+**报名二维码**：`hero` 与 `notice` 有可选槽位 `qr`（`images/xxx.png`）与 `qrLabel`（≤12 字，如「扫码报名」）。二维码画在**白卡**上、标签固定深色——不跟主题走，否则深色主题上白字白底、二维码也扫不出来。带 `qr` 时正文列会自动收窄，`notice` 的标题强制单行。二维码图片同样要登记进 `images/image_sources.json`。
+
 ```json
 {
   "version": 1,
