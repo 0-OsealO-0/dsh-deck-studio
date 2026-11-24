@@ -56,6 +56,8 @@ deck(action="init", project="D:\\work\\20261120-迎新晚会", profile="campaign
 source.md          内容骨架，先改这里
 design_spec.md     设计意图 + Motion 默认关闭
 spec_lock.md       canvas / colors / typography / mode
+page_plan.json     页面契约（§2.3，手写；没有它字数审计跳过，scaffold 也拒绝出页）
+native_plan.json   原生页拼接（§2.3d，可选；有它 export 会多出一份 -native.pptx）
 svg_output/        放 01_cover.svg、02_*.svg
 images/            实拍图 + image_sources.json（质量门只认这个目录）
 assets/            logo、装饰素材
@@ -71,6 +73,155 @@ exports/           PPTX / PDF / HTML
 - 页角色写清楚：封面 `<svg data-pptx-page-role="cover">`，结尾 `"ending"`，中间页 `"content"`；根级可见 `<g>` 必须带 `data-pptx-bounds="0 0 1600 900"`；带 `data-pptx-role` 的元素要同时有稳定 `id`。
 - 同列多行文字合成一个 `<text>` + `<tspan x dy>`，不要兄弟 `<text>` 叠行，否则报 "paragraph-like line run(s) split"。
 - 字体优先用已装 TTF：`Source Han Sans SC TTF`、`Source Han Serif SC TTF`、`Glow Sans SC Normal TTF`、`Smiley Sans Oblique`、`LXGW WenKai`。字重是独立家族，下拉要选全名（如 `Source Han Serif SC TTF Light`）。
+
+### 2.3 页面契约（写文案之前先认领原型）
+
+质量门查结构、查字号、查图片，但不查「这段文案放不放得下」。放不下时 SVG 不会报错，它只是把字
+压在版边，或者溢出到画布外——一直到投影仪上才发现。页面契约把每页的槽位与字数上限变成数据。
+
+1. 先跑 `deck(action="brief", project="...")`，拿原型菜单与槽位预算。
+2. 在项目根目录写 `page_plan.json`：一页一条，`file` 指向 `svg_output/` 里的文件名，`text` 的键用原型槽位名。
+3. 按预算写文案，再画 SVG。
+4. `deck(action="check")` 会逐槽核对字数与条数；超限进 `data.blockers`（`ok=false`），先改文案或拆页，**不要缩字号**——字号改了排版关系就散了。
+
+8 个原型（`data.archetypes`，槽位上限以 `brief` 输出为准）：
+
+| 原型 | 用途 | 必填槽位 |
+| --- | --- | --- |
+| `cover` | 封面：场合 + 标题 + 元信息 | `title` |
+| `statement` | 观点页：一页一个主张 | `headline` |
+| `image` | 图文页：左文右图，图用 `images/` 里的文件 | `headline`、`image` |
+| `hero` | 招新/预告大图页：整页照片 + 主张 + 时间地点 + 报名号召 | `kicker`、`title`、`when`、`where`、`cta`、`image` |
+| `metrics` | 数据页：2–4 个指标，每个必须带数字 | `headline`、`metrics` |
+| `comparison` | 对比页：两边各一句标题 + 取舍 | `headline`、`leftTitle`、`rightTitle` |
+| `process` | 流程页：3–5 步 | `headline`、`steps` |
+| `closing` | 结尾页：下一步 + 联系人 | `headline`、`actions` |
+
+```json
+{
+  "version": 1,
+  "profile": "formal",
+  "pages": [
+    { "file": "01_cover.svg", "archetype": "cover",
+      "text": { "title": "Deck Studio", "subtitle": "把演示流程收成一个工具", "meta": "2026-11-24 · 班级宣传" } },
+    { "file": "02_body.svg", "archetype": "process",
+      "text": { "headline": "这学期只做三件事", "steps": ["01　拍照成素材", "02　通知先给结论", "03　留一张可复用版式"] } }
+  ]
+}
+```
+
+规则：
+
+- 1 字 = 1 字符，中英文都算 1；行首的 `01　`、`1.`、`①` 这类序号前缀**不计入**（版式自己会画）。
+- `metrics` 的每条要能核对：没有数字的「很多」「大幅」会被判 `vague`。
+- **结论落哪由槽位决定**：`comparison` 页可写 `"takeawayAnchor": "auto" | "bottom" | "flow"`。`auto`（默认）按剩余空间判定；`bottom` 永远贴页脚、`flow` 永远紧跟两栏。写别的词会被 `brief` / `check` 点名。
+- 契约里声明了 `svg_output/` 不存在的文件、或没写进契约的页面，都只给 warning，不阻塞。
+- **没有 `page_plan.json` 的项目不报错**：审计整体跳过，只在 `data.plan.warnings` 里提示一句。老项目可以慢慢补。
+- `export` 会硬拦契约违规（跑 python 质量门之前就失败），因为超版文案一定会带进 PPTX。确要强行导出，先删掉 `page_plan.json`。
+
+### 2.3a 骨架与主题（可选：让插件出草稿页）
+
+`page_plan.json` 写完之后，可以让插件直接把这 8 个原型画成 SVG 草稿，省掉「每页从零排」：
+
+```text
+deck(action="scaffold", project="...", theme="blueprint-seu")
+```
+
+- **前提**：已有 `page_plan.json`；硬违规（未知原型、缺必填槽位、声明了不存在的页）会直接报错，`over` / `vague` 只警告不拦。
+- **主题**（`theme`，缺省按 `args.theme → page_plan.json 的 theme → spec_lock 的 "- theme:" → 上次 skeleton_report.json 的主题 → profile 默认` 顺序解析；重跑不会把已有页面悄悄改回默认主题）：
+
+| 主题 id | 视觉语言 | 适合 |
+| --- | --- | --- |
+| `paper-stamp` | 冷白纸感 + 朱红印章 | 正式汇报（默认 formal） |
+| `navy-brief` | 深蓝底 + 左侧色带 | 答辩、对外汇报 |
+| `blueprint-seu` | 建筑蓝图网格 + 图签双框（东南大学色 `#12385F`） | 校内正式场合 |
+| `neon-cyan` | 近黑底 + 青色高亮 | 暗厅投影的活动、招新（默认 campaign） |
+| `warm-sand` | 暖沙浅底 + 橘红强调 | 白天发群里的招新、预告（浅底不刺眼） |
+| `print-mono` | 白底黑墨 + 宋体标题 | 文艺、单色印刷（默认 literary） |
+| `ink-water` | 宣纸底 + 墨黑 + 朱砂、宋体标题 | 诗会、读书会、纪念册 |
+
+- **变体**：每页可写 `"variant": "impact"`（默认，主张优先）或 `"density"`（信息优先：字小一档、行数更多）。
+- **不覆盖手改**：已存在的 SVG 默认跳过；要重画就 `force=true`（会覆盖手改内容）。
+- **字号对齐**：生成后会把主题的字号阶梯写回 `spec_lock.md` 的 `## typography`（缺的补、值不同就改），否则质量门会把新字号当成未登记角色。这一步会改动锁文件，`data.updatedRoles` 里有逐条记录。
+- **产物**：`validation/skeleton_report.json`（主题、写了哪些页、跳过哪些、补了哪些字号）。
+- 草稿页同样是普通 SVG：可以直接改字、加图、换配色，再 `check` / `export`。骨架只负责版面关系，不替你判断内容值不值得讲（那是 §2.4）。
+
+### 2.3b 浏览器改字（可选：改文案不用碰 SVG）
+
+骨架页写出来之后，改一句话不必回到源码里找 `<tspan>`：
+
+```text
+deck(action="edit", project="...")
+```
+
+生成 `exports/<标题>-edits.html`（单文件，无服务端），用 Chrome 或 Edge 打开：
+
+- 左栏切页，中间实时预览，右栏是这一页的槽位表单；每个槽位实时显示 `12 / 18 字`，超了变红。
+- **保存到项目目录**：第一次会弹目录选择，选这个 deck 的项目根目录（有 `page_plan.json` 的那个）。这一步会同时写 `page_plan.json` 与 `svg_output/` 里的全部页面，写出来的 SVG 与 `scaffold` 逐字节相同（同一个渲染器）。
+- 浏览器不支持 File System Access（如 Firefox）时用**下载 JSON**，手动覆盖 `page_plan.json`，再 `scaffold force=true`。
+- 编辑器只改文案、版式强度与主题，不做拖拽排版、不改字号；改完仍然 `check` 复核、`export` 出 PPTX。
+
+### 2.3c 配图与混合导出（图片槽位、保真兜底）
+
+**图片槽位**：`cover` 有可选的 `image`（背景图，全幅 + 渐变压暗），`image` 原型有必填的 `image`（右半幅）。值写 `images/photo.jpg` 这种项目内相对路径：
+
+- `scaffold` 会在 SVG 里写成 `../images/photo.jpg`（导出器按项目根找图，浏览器按 SVG 目录找图，只有这一种写法两边都对）。
+- 图片不在 `images/` 里只警告不拦（可以先写契约、后拍图）；外链（`http://…`）、绝对路径、非图片扩展名进 `data.blockers`，`check` 里前缀是「配图：」。
+- 编辑器里每个图片槽位有「选图…」，选中后不落盘，保存时一并写进项目 `images/`（状态栏报「+ N 张图」）。
+- 竖幅图框放横图（5:3 海报、16:9 截图）时，`slice` 会把两侧裁掉：加 `"imageFit": "contain"` 让整图显示，空出来的地方用主题底色补。封面与图文页的 `imageFit` 都是 12 字预算。
+
+**混合导出**（可选，默认关闭）：
+
+```text
+deck(action="export", project="...", mixed=true)
+```
+
+- 每页先用 Chrome/Edge 把背景层（底色、装饰、照片、渐变）栅格化成 1600×900 PNG，再把**文字层**交给 PPTX 转换器做成原生文本框，所以文字仍然可改、背景 1:1 保真。
+- 什么时候用：背景里有转换器保不住的东西（滤镜、复杂透明、多重混合），或者你就是要"所见即所得"。
+- 代价：体积。同一份 4 页 deck，纯矢量 21 KB，混合 75 KB（约 3.6×）；页数越多差距越明显。默认导出仍然是纯矢量。
+- 依赖：需要本机 Chrome 或 Edge（`deck status` 的 `data.runtime.browser` 会报；找不到时 `export(mixed=true)` 直接拒绝，不会导到一半才失败）。可用环境变量 `DECK_BROWSER` 指定浏览器可执行文件。
+- 产物：`validation/mixed/`（中间件，可删）；`data.mixedPages` 列出哪些页栅格化了、哪些页没有契约所以按原矢量复制。
+
+### 2.3d 原生页：用学院官方模板拼封面/目录（可选）
+
+矢量页再像，也不如学校那套封面——3D 校门模型、校园宣传片、校徽渐变，这些是 PowerPoint 原生对象，python-pptx 搬不动，但 PowerPoint 自己能搬。
+
+**做法**：项目根放一份 `native_plan.json`，`export` 时自动多出一份 `-native.pptx`。
+
+```json
+{
+  "template": "templates/学院模板.pptx",
+  "slides": {
+    "01_cover.svg": {
+      "templateSlide": 1,
+      "fields": { "!!title": "这学期宣传怎么干", "!!date": "2026-11-24 · 东南大学" }
+    }
+  },
+  "append": [
+    { "templateSlide": 3, "fields": { "!!contact": "联系人：班级宣传委员" } }
+  ]
+}
+```
+
+- `slides`：把导出的第 N 页**换成**模板里的某一页（`templateSlide` 从 1 起，按文件顺序对应 `svg_output/`）。
+- `append`：在末尾**追加**模板页（目录、致谢这类不需要改字的位置）。
+- `fields`：把模板里写着 `!!字段名` 的文本框换成你的文案，保留原有字号/字重；组合里的文本框和表格单元格也会被找到。
+- 只替换文字，不搬布局：模板里的 3D 模型、视频、SmartArt 原样保留（COM `Slides.InsertFromFile` 整页复制）。
+
+**依赖与降级**（三种情况都会在 `check`/`status` 里提前说，不会导到一半才炸）：
+
+| 情况 | 行为 |
+|---|---|
+| 没有 `native_plan.json` | 只导出矢量页，`warnings` 里提示怎么写 |
+| 有 plan 但模板不存在 / 字段写错 | 矢量页照常导出，`warnings` 指出具体哪条错 |
+| 找不到 PowerPoint（`POWERPNT.EXE`） | 跳过原生页，纯矢量产物保留；可用 `DECK_POWERPOINT` 指定 |
+
+**踩过的坑**（实现里已固化，改脚本前先读）：
+
+- COM 的 `Presentations.Open` / `SaveAs` 收到中文路径会报 `Filename cannot exceed 255 characters`（误导性错误）→ 在 `validation/native/` 的 ASCII 工作目录里拼，最后再拷到真实文件名。
+- `InsertFromFile` 的 `Index` 是"插在这一页之后"，不是"插成第 N 页"：替换第 N 页要传 `N-1`，再删掉被挤下去的 `N+1`。
+- PowerShell 函数参数用 `[string]$Spec` 命名后，再把解析出的对象赋给 `$spec` 会被强制转回字符串（大小写不敏感）→ 参数名和变量名必须不同。
+- `.ps1` 含中文必须存 UTF-8 with BOM；脚本 `finally` 里必须关演示文稿并 `Stop-Process POWERPNT`，否则残留实例会让下一次 `Open` 拿到 0 页。
 
 ### 2.4 大纲红队（写 SVG 之前，不可跳过）
 
@@ -130,6 +281,8 @@ deck(action="check", project="...", review=true)
 
 - 跑 `svg_quality_checker.py --stage final --json`；ERROR 必须修，WARN 可解释。未通过时 `check` 会把前几条 ERROR 直接打在 message 里，`data.errors` / `data.warnings` 是全量数组，不用自己解析 JSON。
 - `check` 还会补一层自有自查（`data.audit`）：未登记字号的使用次数、`<image href>` 指向的文件是否存在、图片是不是小于 2KB 的失败占位、用到的图有没有登记进 `images/image_sources.json`。这些是 python 质量门容易静默放过的部分。
+- `scaffold` 生成的草稿页同样过这道门；主题字号已由 scaffold 写进 `spec_lock.md`，若手工改了字号，先补锁再跑门。
+- `check` 同时跑页面契约（`data.plan`）：有 `page_plan.json` 时逐槽核字数与条数，违规写成 `字数契约：…` 进 `data.blockers`；没契约时整体跳过（老项目不受影响）。超限先改文案或拆页，不要缩字号。
 - `review=true` 额外跑 `visual_review.py` 出 PNG，放在 `.preview/`。先看渲染，再导出。它要两样东西同时在：python 里 `import playwright` 能过，且项目内有存活的 live-preview 服务（`live_preview/lock.json`，由 `scripts/svg_editor/server.py` 写出）。缺任何一样，`check` 返回 `ok=false`，原因写进 `data.blockers`——这是有意的，没回渲就不算验收通过，别当成"通过但有 warning"。
 - 开工前先 `deck(action="status")`：`data.runtime.visualReview.playwright` 与 `data.previewServer.running` 会直接告诉你回渲能不能跑，不用等 `check` 才发现缺环境。
 - 常见硬伤：文字溢出、对比度不足、一页超过 3 个视觉层级、标题换行难看、图片被拉伸、字号没登记、配图缺署名。
@@ -155,6 +308,8 @@ python -c "from PIL import Image;fs=['qa/slide%d.png'%i for i in range(1,7)];ims
 ```
 
 - **PowerPoint 不嵌入用户字体**：正式交付优先 PDF；PPTX 给能装同款字体的机器。
+- **文字位置已校准**：转换器按 `0.98em` 估首行上沿（原 0.85em 会让整页文字低 8–14px）。这是 `vendor/ppt-master/.../drawingml/elements.py` 里的唯一一处本地改动，清单在 `docs/vendor-patches.md`；升级 vendor 后必须补回，并复导一份带标题页的 deck 检查基线位置。
+- `data-pptx-frame` 只改文本框内边距，**不影响基线位置**，不要用它修上下偏移。
 
 ### 5. 演示 HTML
 

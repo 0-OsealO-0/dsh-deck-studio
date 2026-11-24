@@ -1,10 +1,30 @@
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import z from '@deepseek-ai/schemastery';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { detectPython, detectSkillRoot, installedFontFamilies, runtimeInfo } from './lib/paths.mjs';
+import {
+  detectBrowser,
+  detectPowerPoint,
+  detectPython,
+  detectSkillRoot,
+  installedFontFamilies,
+  runtimeInfo,
+} from './lib/paths.mjs';
+import {
+  ARCHETYPE_ORDER,
+  PLAN_FILE,
+  auditPlan,
+  formatViolations,
+  missingPlan,
+  planMenuText,
+  planSkeletonText,
+} from './lib/page-contracts.mjs';
+import { THEME_IDS, THEMES, TYPE_ROLES, getTheme, themeForProfile, themeMenuText } from './lib/themes.mjs';
+import { ARCHETYPE_IDS, renderPage as renderSkeletonPage } from './lib/skeleton.mjs';
+import { buildEditorHtml } from './lib/editor.mjs';
 
 const PLUGIN_NAME = 'deck-studio';
 const PROVIDER_NAME = 'deck-studio';
@@ -16,7 +36,7 @@ const DEFAULT_PYTHON = detectPython();
 const DEFAULT_SKILL_ROOT = detectSkillRoot();
 const PROFILES = new Set(['formal', 'campaign', 'literary']);
 const FORMATS = new Set(['pptx', 'pdf', 'png', 'all']);
-const ACTIONS = new Set(['propose', 'init', 'status', 'check', 'export', 'html', 'animate']);
+const ACTIONS = new Set(['propose', 'init', 'status', 'brief', 'scaffold', 'edit', 'check', 'export', 'html', 'animate']);
 
 const PROFILE_LABEL = {
   formal: '正式汇报',
@@ -575,11 +595,17 @@ async function auditProject(project) {
       warnings.push(`图片只有 ${bytes}B，像是下载失败的占位：${href}。`);
     }
     if (manifest && !manifestFiles.has(base)) {
-      warnings.push(`图片 ${base} 没有登记到 images/image_sources.json，质量门查不到授权与署名。`);
+      warnings.push(
+        `图片 ${base} 没有登记到 images/image_sources.json，质量门查不到授权与署名。` +
+          `（格式是 {"items":[{"filename":"${base}","source":"…","license":"…"}]}，文件名不带 images/ 前缀）`,
+      );
     }
   }
   if (imageHrefs.size > 0 && !manifest) {
-    warnings.push('用了外部图片但没有 images/image_sources.json；授权、署名和 §7 页面署名契约都无从校验。');
+    warnings.push(
+      '用了外部图片但没有 images/image_sources.json；授权、署名和 §7 页面署名契约都无从校验。' +
+        '新建它，写成 {"items":[{"filename":"photo.jpg","source":"活动拍摄","license":"CC BY 4.0"}]}。',
+    );
   }
 
   const declaredFamilies = declaredFamiliesFromLock(lockText);
@@ -600,6 +626,244 @@ async function auditProject(project) {
   }
 
   return { notes, warnings, declared: [...declared.entries()], used: [...used.entries()] };
+}
+
+const DESIGN_PROFILE_RE = /^\s*[-*]\s*profile\s*[:：]\s*([A-Za-z]+)\s*$/im;
+
+// The profile is recorded in design_spec.md by init. A project without one is
+// treated as formal rather than rejected: the contract table only covers formal
+// in 0.2.0, and an unknown profile must not turn a green check red.
+async function projectProfile(project, fallback) {
+  const specPath = path.join(project, 'design_spec.md');
+  if (await exists(specPath)) {
+    const match = (await readText(specPath)).match(DESIGN_PROFILE_RE);
+    const found = match?.[1]?.toLowerCase();
+    if (found && PROFILES.has(found)) return found;
+  }
+  const given = String(fallback ?? '').toLowerCase();
+  return PROFILES.has(given) ? given : 'formal';
+}
+
+async function readPagePlan(project) {
+  const planPath = path.join(project, PLAN_FILE);
+  if (!(await exists(planPath))) return { path: planPath, present: false, plan: null, error: '' };
+  const raw = await readText(planPath);
+  try {
+    return { path: planPath, present: true, plan: JSON.parse(raw), error: '' };
+  } catch (error) {
+    return { path: planPath, present: true, plan: null, error: String(error?.message || error) };
+  }
+}
+
+// Image slots name a file under images/; the contract audit only warns when the
+// file is absent (a page can be written before its photo is shot), but the
+// scaffold refuses to bake a broken href into an SVG.
+async function projectImages(project) {
+  const dir = path.join(project, 'images');
+  if (!(await exists(dir))) return [];
+  const out = [];
+  const walk = async (base, prefix) => {
+    for (const entry of await fs.readdir(base, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(path.join(base, entry.name), rel);
+        continue;
+      }
+      if (/\.(?:png|jpe?g|webp|gif|bmp|tif?f|svg)$/i.test(entry.name)) out.push(`images/${rel}`);
+    }
+  };
+  await walk(dir, '');
+  return out;
+}
+
+// A broken page_plan.json is reported as a shape violation, never thrown: one
+// malformed plan must not make the whole check unusable.
+async function pagePlanAudit(project, { profile, svgFiles }) {
+  const read = await readPagePlan(project);
+  if (!read.present) return { ...missingPlan(svgFiles), path: read.path, plan: null, error: '' };
+  if (read.error) {
+    return {
+      present: true,
+      valid: false,
+      path: read.path,
+      plan: null,
+      error: read.error,
+      violations: [
+        { file: PLAN_FILE, slot: '', kind: 'shape', message: `${PLAN_FILE} 不是合法 JSON：${read.error}` },
+      ],
+      warnings: [],
+      usage: [],
+      counts: { pages: 0, violations: 1, warnings: 0 },
+    };
+  }
+  const images = await projectImages(project);
+  return { ...auditPlan(read.plan, { svgFiles, profile, images }), path: read.path, plan: read.plan, error: '' };
+}
+
+// ---------------------------------------------------------------- scaffold
+// The skeleton emits a compact type ladder; spec_lock ships only five roles.
+// Register what the pages actually draw, otherwise the "third use of an
+// unregistered size" audit flags every generated deck on its first check.
+const LOCK_ROLE_NAME = { pageNumber: 'page_number' };
+const LOCK_THEME_RE = /^\s*[-*]\s*theme\s*[:：]\s*([a-z0-9-]+)\s*$/im;
+
+async function lockThemeId(project) {
+  const lockPath = path.join(project, 'spec_lock.md');
+  if (!(await exists(lockPath))) return null;
+  const match = (await readText(lockPath)).match(LOCK_THEME_RE);
+  return match ? match[1].toLowerCase() : null;
+}
+
+async function ensureLockRoles(project, theme) {
+  const lockPath = path.join(project, 'spec_lock.md');
+  if (!(await exists(lockPath))) return { patched: false, added: [], updated: [] };
+  let lock = await readText(lockPath);
+  const added = [];
+  const updated = [];
+  // A role the lock already names but at the old size would leave the page
+  // using an unregistered size (the gate counts the third use as a new role),
+  // so the scaffold syncs the value instead of only filling gaps.
+  for (const [role, size] of Object.entries(theme.type)) {
+    const name = LOCK_ROLE_NAME[role] ?? role;
+    const line = new RegExp(`^(\\s*[-*]\\s*${escapeRegExp(name)}\\s*[:：]\\s*)(\\d+)(\\s*)$`, 'mi');
+    if (line.test(lock)) {
+      const current = Number(lock.match(line)[2]);
+      if (current !== size) {
+        lock = lock.replace(line, (_, head) => `${head}${size}`);
+        updated.push(`${name}: ${current} → ${size}`);
+      }
+    } else {
+      added.push([name, size]);
+    }
+  }
+  if (!added.length && !updated.length) return { patched: false, added: [], updated: [] };
+  if (added.length) {
+    const lines = added.map(([name, size]) => `- ${name}: ${size}`).join('\n');
+    const heading = /^##\s*typography\s*$/im;
+    lock = heading.test(lock)
+      ? lock.replace(heading, (match) => `${match}\n${lines}`)
+      : `${lock.replace(/\s*$/, '')}\n\n## typography\n${lines}\n`;
+  }
+  await fs.writeFile(lockPath, lock, 'utf8');
+  return { patched: true, added: added.map(([name]) => name), updated };
+}
+
+async function reportTheme(project) {
+  // Re-running scaffold without a theme must not silently repaint a deck that
+  // was generated in another language; the last run's report is the record of
+  // what this project actually looks like.
+  const report = await readJson(path.join(project, 'validation', 'skeleton_report.json'));
+  return typeof report?.theme === 'string' ? report.theme : null;
+}
+
+function resolveTheme(args, plan, lockTheme, profile, previousTheme) {
+  const wanted = String(args.theme ?? plan.theme ?? lockTheme ?? previousTheme ?? '').toLowerCase();
+  if (wanted) {
+    const theme = getTheme(wanted);
+    if (!theme) throw new Error(`没有「${wanted}」这个视觉语言；可用：\n${themeMenuText()}`);
+    return theme;
+  }
+  return themeForProfile(profile);
+}
+
+async function actionScaffold(config, project, args) {
+  const read = await readPagePlan(project);
+  if (!read.present) {
+    throw new Error(`还没有 ${PLAN_FILE}；先 deck(action="brief") 拿原型菜单与槽位预算，写 ${PLAN_FILE} 再 scaffold。`);
+  }
+  if (read.error) throw new Error(`${PLAN_FILE} 不是合法 JSON：${read.error}`);
+  const profile = await projectProfile(project, args.profile ?? config.defaultProfile);
+  const images = await projectImages(project);
+  const audit = auditPlan(read.plan, { svgFiles: [], profile, images });
+  const hard = audit.violations.filter((item) => item.kind !== 'over' && item.kind !== 'vague');
+  if (hard.length > 0) {
+    throw new Error(
+      `${PLAN_FILE} 还不能生成页面（${hard.length} 处）：\n${formatViolations(hard, 8)}\n先改契约，再 scaffold。`,
+    );
+  }
+  const pages = Array.isArray(read.plan.pages) ? read.plan.pages : [];
+  if (pages.length === 0) throw new Error(`${PLAN_FILE} 的 pages 是空的。`);
+
+  const theme = resolveTheme(args, read.plan, await lockThemeId(project), profile, await reportTheme(project));
+  const dir = path.join(project, 'svg_output');
+  await ensureDir(dir);
+
+  const written = [];
+  const skipped = [];
+  for (const [index, page] of pages.entries()) {
+    const file = String(page.file ?? '').trim();
+    if (!file) continue;
+    const variant = page.variant === 'density' ? 'density' : 'impact';
+    const target = path.join(dir, file);
+    if (!args.force && (await exists(target))) {
+      skipped.push(file);
+      continue;
+    }
+    const svg = renderSkeletonPage(
+      { archetype: page.archetype, variant, text: page.text ?? {} },
+      { theme, pageNumber: index + 1, total: pages.length },
+    );
+    const header = `<!-- deck-scaffold theme="${theme.id}" archetype="${page.archetype}" variant="${variant}" -->\n`;
+    await fs.writeFile(target, `${header}${svg}\n`, 'utf8');
+    written.push({ file, archetype: page.archetype, variant, bytes: Buffer.byteLength(`${header}${svg}`) });
+  }
+
+  const patch = written.length > 0 ? await ensureLockRoles(project, theme) : { patched: false, added: [], updated: [] };
+  const reportPath = path.join(project, 'validation', 'skeleton_report.json');
+  await ensureDir(path.dirname(reportPath));
+  const report = {
+    schema: 'deck-skeleton/1',
+    theme: theme.id,
+    themeLabel: theme.label,
+    profile,
+    pages: written.map((page) => ({ file: page.file, archetype: page.archetype, variant: page.variant })),
+    skipped,
+    lockRolesAdded: patch.added,
+    lockRolesUpdated: patch.updated,
+    generatedAt: new Date().toISOString(),
+  };
+  await fs.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+
+  const parts = [];
+  const askedTheme = String(args.theme ?? '').toLowerCase();
+  if (askedTheme && read.plan.theme && askedTheme !== String(read.plan.theme).toLowerCase()) {
+    parts.push(`注意：page_plan.json 写的是 theme="${read.plan.theme}"，这次按参数用了 "${askedTheme}"；下次不传 theme 会回到契约里的那套。`);
+  }
+  parts.push(`已用「${theme.label}」（${theme.id}）生成 ${written.length} 页：${written.map((p) => p.file).join('、') || '（无）'}。`);
+  if (skipped.length > 0) {
+    parts.push(`跳过已存在的 ${skipped.length} 页：${skipped.join('、')}（要重画就 force=true，会覆盖手改内容）。`);
+  }
+  const mediaWarnings = audit.warnings.filter((line) => line.includes('不在 images/'));
+  if (mediaWarnings.length) parts.push(`配图提醒：\n${mediaWarnings.map((line) => `· ${line}`).join('\n')}`);
+  if (patch.added.length) parts.push(`spec_lock 的 typography 补了 ${patch.added.length} 个角色：${patch.added.join('、')}。`);
+  if (patch.updated.length) parts.push(`spec_lock 的 typography 对齐了 ${patch.updated.length} 个字号：${patch.updated.join('、')}。`);
+  if (skipped.length === 0 && patch.patched) parts.push('下一步 deck(action="check") 跑质量门；要改字就改 page_plan.json 再 scaffold force=true。');
+  else if (skipped.length === 0) parts.push('下一步 deck(action="check") 跑质量门。');
+  parts.push(`主题列表：\n${themeMenuText()}`);
+
+  const artifacts = [await artifact('skeleton-report', reportPath)];
+  for (const page of written.slice(0, 8)) artifacts.push(await artifact('svg-page', path.join(dir, page.file)));
+
+  return {
+    ok: true,
+    action: 'scaffold',
+    project,
+    message: parts.join('\n'),
+    artifacts,
+    data: {
+      theme: theme.id,
+      themeLabel: theme.label,
+      profile,
+      written,
+      skipped,
+      patchedRoles: patch.added,
+      updatedRoles: patch.updated,
+      reportPath,
+      themes: THEME_IDS,
+      archetypes: ARCHETYPE_IDS,
+    },
+  };
 }
 
 function qualityDigest(report) {  const digest = { counts: { errors: 0, warnings: 0 }, errors: [], warnings: [] };
@@ -1128,8 +1392,8 @@ async function actionInit(config, project, args) {
     action: 'init',
     project,
     message: direction
-      ? `已初始化 ${PROFILE_LABEL[profile]} 项目，并落地方案「${direction.name}」（${direction.id}）；下一步编辑 source.md 与 spec_lock.md。`
-      : `已初始化 ${PROFILE_LABEL[profile]} 项目；下一步编辑 source.md 与 spec_lock.md。还没给用户选方向的话，先 deck propose 出三个候选。`,
+      ? `已初始化 ${PROFILE_LABEL[profile]} 项目，并落地方案「${direction.name}」（${direction.id}）；下一步编辑 source.md 与 spec_lock.md，再用 deck brief 拿页面契约预算写 page_plan.json。`
+      : `已初始化 ${PROFILE_LABEL[profile]} 项目；下一步编辑 source.md 与 spec_lock.md，再用 deck brief 拿页面契约预算写 page_plan.json。还没给用户选方向的话，先 deck propose 出三个候选。`,
     artifacts,
     data: { profile, title, direction: direction ? direction.id : null },
   };
@@ -1159,11 +1423,34 @@ async function actionStatus(config, project) {
 
   const runtime = runtimeInfo();
   const previewServer = await livePreviewState(project);
+  const plan = await pagePlanAudit(project, {
+    profile: await projectProfile(project, null),
+    svgFiles: svgs,
+  });
   // Say it here, not only when check(review=true) fails: a missing playwright
   // turns visual review into a no-op, and that must be visible before the work.
   const reviewHint = runtime.visualReview?.playwright
     ? ''
     : '\n视觉回渲不可用：python 里没有 playwright，check(review=true) 会返回 ok=false。安装：pip install playwright && python -m playwright install chromium';
+
+  // Mixed export needs a real browser on this machine; say so up front instead
+  // of failing in the middle of an export after the pages are rasterised.
+  const browserPath = detectBrowser();
+  const mixedHint = browserPath
+    ? ''
+    : '\n混合导出不可用：没有找到 Chrome/Edge，export(mixed=true) 会拒绝执行。装 Chrome 或设 DECK_BROWSER 指向浏览器。';
+
+  // Native splicing is likewise all-or-nothing: a missing PowerPoint or a
+  // missing template must be visible before export, not as a warning after it.
+  const native = await readNativePlan(project);
+  const powerPoint = detectPowerPoint();
+  const nativeHint = !native.present
+    ? ''
+    : native.problems.length
+      ? `\n原生页（${NATIVE_PLAN_FILE}）有 ${native.problems.length} 处问题：${native.problems.slice(0, 3).join('；')}`
+      : !powerPoint
+        ? '\n原生页不可用：没有找到 Microsoft PowerPoint（POWERPNT.EXE）。装 PowerPoint 或设 DECK_POWERPOINT；export 会跳过原生页。'
+        : `\n原生页：${NATIVE_PLAN_FILE} 已就绪，export 会另存一份 -native.pptx。`;
 
   return {
     ok: missing.length === 0,
@@ -1172,7 +1459,7 @@ async function actionStatus(config, project) {
     message:
       (missing.length === 0
         ? `项目可用：${svgs.length} 页 SVG，spec_lock 已就绪。`
-        : `还缺：${missing.join(', ')}。`) + reviewHint,
+        : `还缺：${missing.join(', ')}。`) + reviewHint + mixedHint + nativeHint,
     artifacts,
     data: {
       svgCount: svgs.length,
@@ -1184,8 +1471,106 @@ async function actionStatus(config, project) {
       exports: exports_,
       previews,
       missing,
+      powerPoint: { path: powerPoint, nativeExport: Boolean(powerPoint) },
+      nativePlan: native.present
+        ? { present: true, template: native.plan?.template ?? '', replace: Object.keys(native.plan?.slides ?? {}).length, append: native.plan?.append.length ?? 0, problems: native.problems }
+        : { present: false },
+      hasPagePlan: plan.present,
+      pagePlan: { pages: plan.counts.pages, violations: plan.counts.violations, warnings: plan.counts.warnings },
       previewServer,
-      runtime,
+      runtime: { ...runtime, browser: { path: browserPath, mixedExport: Boolean(browserPath) } },
+    },
+  };
+}
+
+function usageLines(plan) {
+  const byFile = new Map();
+  for (const row of plan.usage) {
+    if (!byFile.has(row.file)) byFile.set(row.file, { archetype: row.archetype, rows: [] });
+    byFile.get(row.file).rows.push(row);
+  }
+  const lines = [];
+  for (const [file, group] of byFile) {
+    const cells = group.rows.map((row) => `${row.label} ${row.used}/${row.max}${row.unit}`);
+    lines.push(`- ${file}（${group.archetype}）：${cells.join(' · ')}`);
+  }
+  return lines;
+}
+
+// action=brief is the "write the contract before the pages" stop. With no
+// page_plan.json it prints the slot budgets; with one it prints the per-page
+// budget against what the author actually typed.
+async function actionBrief(config, project, args) {
+  const svgs = await listSvg(project);
+  const profile = await projectProfile(project, args.profile ?? config.defaultProfile);
+  const plan = await pagePlanAudit(project, { profile, svgFiles: svgs });
+  const menu = planMenuText();
+  const skeleton = planSkeletonText();
+
+  const artifacts = [];
+  if (plan.present) artifacts.push(await artifact('page-plan', plan.path));
+  const violationLines = formatViolations(plan.violations, 10).map((line) => `- ${clampText(line, 300)}`);
+  const warningLines = plan.warnings.slice(0, 6).map((line) => `· ${clampText(line, 240)}`);
+
+  let message;
+  let ok;
+  if (!plan.present) {
+    ok = false;
+    message = [
+      `还没有 ${PLAN_FILE}：先把每页写成契约，再画 SVG。`,
+      svgs.length
+        ? `当前 ${svgs.length} 页 SVG 的字数审计已跳过；没有契约时 check 不判断文案会不会超版。`
+        : '契约写好后，check 会逐槽核对字数与条数。',
+      '',
+      `在 ${project} 下建 ${PLAN_FILE}，一页一条：file 指向 svg_output/ 里的文件名，text 的键用下列槽位。`,
+      '',
+      '骨架（按需增删页）：',
+      skeleton.text,
+      '',
+      `profile=${profile} 的原型与槽位预算：`,
+      menu,
+      '',
+      '契约写完可以 deck(action="scaffold") 直接出页；视觉语言（theme）可选：',
+      themeMenuText(),
+    ].join('\n');
+  } else {
+    ok = plan.violations.length === 0;
+    const head = ok
+      ? `契约 ${plan.counts.pages} 页，字数与条数都在预算内。`
+      : `契约 ${plan.counts.pages} 页，${plan.violations.length} 处不合规，先改文案或拆页，别缩字号。`;
+    const parts = [head];
+    if (violationLines.length) {
+      parts.push('', `不合规（${plan.violations.length} 处${plan.violations.length > violationLines.length ? `，只列前 ${violationLines.length}` : ''}）：`, ...violationLines);
+    }
+    const usage = usageLines(plan);
+    if (usage.length) parts.push('', '预算占用：', ...usage);
+    if (warningLines.length) parts.push('', '提示：', ...warningLines);
+    if (!ok) parts.push('', `改完重跑 deck(action="brief", project=…) 或 deck(action="check", project=…) 复核。`);
+    if (ok) parts.push('', `下一步可以 deck(action="scaffold", project=…) 直接出草稿页；视觉语言（theme）：${THEME_IDS.join(' / ')}。`);
+    message = parts.join('\n');
+  }
+
+  return {
+    ok,
+    action: 'brief',
+    project,
+    message,
+    artifacts,
+    data: {
+      profile,
+      planPath: plan.path,
+      present: plan.present,
+      valid: plan.valid,
+      pages: plan.counts.pages,
+      violations: plan.violations,
+      warnings: plan.warnings,
+      usage: plan.usage,
+      svgCount: svgs.length,
+      archetypes: ARCHETYPE_ORDER,
+      menu,
+      skeleton: skeleton.skeleton,
+      themes: THEME_IDS,
+      themeMenu: themeMenuText(),
     },
   };
 }
@@ -1237,6 +1622,19 @@ async function actionCheck(config, project, args) {
     audit.warnings.push(detail);
     blockers.push(detail);
   }
+  let plan;
+  try {
+    const profile = await projectProfile(project, args.profile ?? config.defaultProfile);
+    plan = await pagePlanAudit(project, { profile, svgFiles: svgs });
+    for (const item of plan.violations) {
+      blockers.push(`${item.kind === 'media' ? '配图' : '字数契约'}：${item.file}：${item.message}`);
+    }
+  } catch (error) {
+    const detail = `字数契约未核查：${String(error?.message || error)}`;
+    plan = missingPlan(svgs);
+    plan.warnings.push(detail);
+    blockers.push(detail);
+  }
   const ok = quality.code === 0 && blockers.length === 0;
   const hints = hintsFor([...digest.errors, ...digest.warnings, ...audit.warnings]);
   const errorLines = digest.errors.slice(0, 5).map((line) => `- ${clampText(line, 400)}`);
@@ -1254,6 +1652,17 @@ async function actionCheck(config, project, args) {
     message = `质量门通过${digest.counts.warnings ? `（${digest.counts.warnings} 条 warning，可解释即可）` : ''}。${reviewed}`;
   }
   if (auditLines.length) message += `\n补充自查：\n${auditLines.join('\n')}`;
+  // Violations already reach the user through blockers when the quality gate
+  // passed; only print them here when the gate failed, otherwise they duplicate.
+  if (plan.present) {
+    const planWarnings = plan.warnings.slice(0, 3);
+    const planViolations = quality.code === 0 ? [] : plan.violations.slice(0, 5);
+    if (planWarnings.length || planViolations.length) {
+      message += `\n字数契约（${plan.counts.pages} 页）：`;
+      for (const line of formatViolations(planViolations, 5)) message += `\n- ${clampText(line, 300)}`;
+      for (const line of planWarnings) message += `\n· ${clampText(line, 240)}`;
+    }
+  }
   if (hints.length) {
     message += `\n常见改法：\n${hints.slice(0, 4).map((hint) => `· ${hint}`).join('\n')}`;
   }
@@ -1274,8 +1683,199 @@ async function actionCheck(config, project, args) {
       hints,
       blockers,
       audit,
+      plan: {
+        present: plan.present,
+        valid: plan.valid,
+        planPath: plan.path,
+        counts: plan.counts,
+        violations: plan.violations,
+        warnings: plan.warnings,
+        usage: plan.usage,
+      },
       previews,
     },
+  };
+}
+
+// Mixed export: rasterise each skeleton page's background layer with a real
+// browser, then let the PPTX converter lay native text over that picture. Text
+// stays editable, the decoration layer stays pixel-exact. Opt-in only — the
+// pictures make the file several times larger than the pure vector path.
+async function buildMixedProject(config, project, theme, svgs, rawPlan, signal) {
+  const browser = detectBrowser();
+  if (!browser) {
+    throw new Error(
+      '混合导出需要 Chrome 或 Edge：没有找到浏览器。装一个 Chrome，或用环境变量 DECK_BROWSER 指向浏览器程序。',
+    );
+  }
+  const declared = new Map((rawPlan?.pages ?? []).map((page) => [page.file, page]));
+  const dir = path.join(project, 'validation', 'mixed');
+  await fs.rm(dir, { recursive: true, force: true });
+  const svgOut = path.join(dir, 'svg_output');
+  const pngOut = path.join(dir, 'png');
+  await ensureDir(svgOut);
+  await ensureDir(pngOut);
+  // The converter validates every release export against a spec lock.
+  await fs.copyFile(path.join(project, 'spec_lock.md'), path.join(dir, 'spec_lock.md')).catch(() => {});
+  const profileDir = await fs.mkdtemp(path.join(os.tmpdir(), 'deck-mixed-'));
+  const mixed = [];
+  const copied = [];
+  try {
+    for (let i = 0; i < svgs.length; i += 1) {
+      const file = svgs[i];
+      const page = declared.get(file);
+      if (!page) {
+        // A hand-written page has no slots to re-render: keep it vector-clean.
+        await fs.copyFile(path.join(project, 'svg_output', file), path.join(svgOut, file));
+        copied.push(file);
+        continue;
+      }
+      const ctx = { theme, pageNumber: i + 1, total: svgs.length };
+      // The base layer is rendered from validation/mixed/, where a relative
+      // ../images/... would resolve one level too shallow: point the browser at
+      // the absolute file URL instead. The composed export page keeps the
+      // relative form, because that is the converter's contract.
+      const baseSvg = renderSkeletonPage(page, ctx, { part: 'base' }).replace(
+        /href="\.\.\/images\/([^"]+)"/g,
+        (_, rel) => `href="file:///${path.join(project, 'images', rel).replace(/\\/g, '/')}"`,
+      );
+      const baseFile = path.join(dir, `base-${String(i + 1).padStart(2, '0')}.svg`);
+      await fs.writeFile(baseFile, baseSvg, 'utf8');
+      const pngName = `${String(i + 1).padStart(2, '0')}.png`;
+      const pngPath = path.join(pngOut, pngName);
+      const shot = await runProcess(
+        browser,
+        [
+          '--headless=new',
+          '--disable-gpu',
+          '--hide-scrollbars',
+          '--force-device-scale-factor=1',
+          '--window-size=1600,900',
+          `--user-data-dir=${profileDir}`,
+          `--screenshot=${pngPath}`,
+          `file:///${baseFile.replace(/\\/g, '/')}`,
+        ],
+        { timeoutMs: 60000, signal },
+      );
+      if (shot.code !== 0 || !(await exists(pngPath))) {
+        throw new Error(`混合导出：背景栅格化失败（${file}）。\n${clampText(shot.stderr || shot.stdout, 800)}`);
+      }
+      const textSvg = renderSkeletonPage(page, ctx, { part: 'text' });
+      const start = textSvg.indexOf('<g id="content"');
+      if (start < 0) throw new Error(`混合导出：${file} 的文字层没有生成。`);
+      const content = textSvg.slice(start, textSvg.lastIndexOf('</svg>'));
+      const composed =
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" ` +
+        `data-pptx-page-role="${page.archetype === 'cover' ? 'cover' : page.archetype === 'closing' ? 'ending' : 'content'}">` +
+        `<image id="mixed-bg" href="../png/${pngName}" x="0" y="0" width="1600" height="900" preserveAspectRatio="none"/>` +
+        `${content}</svg>`;
+      await fs.writeFile(path.join(svgOut, file), composed, 'utf8');
+      mixed.push(file);
+    }
+  } finally {
+    await fs.rm(profileDir, { recursive: true, force: true }).catch(() => {});
+  }
+  return { dir, mixed, copied };
+}
+
+const NATIVE_PLAN_FILE = 'native_plan.json';
+
+// The spliced deck keeps native PowerPoint pages (3D models, video, SmartArt)
+// that python-pptx cannot copy part-for-part. The plan says which exported page
+// a template slide replaces, and which template slides to append.
+async function readNativePlan(project) {
+  const file = path.join(project, NATIVE_PLAN_FILE);
+  if (!(await exists(file))) return { present: false, plan: null, problems: [], file };
+  let raw;
+  try {
+    raw = JSON.parse(await readText(file));
+  } catch {
+    return { present: true, plan: null, problems: [`${NATIVE_PLAN_FILE} 不是合法 JSON。`], file };
+  }
+  const problems = [];
+  const template = typeof raw?.template === 'string' ? raw.template.trim() : '';
+  if (!template) problems.push('缺 template：写模板 pptx 的路径（相对项目根）。');
+  const slides = {};
+  for (const [svg, entry] of Object.entries(raw?.slides ?? {})) {
+    if (!Number.isInteger(entry?.templateSlide) || entry.templateSlide < 1) {
+      problems.push(`${svg}：templateSlide 必须是 ≥1 的整数。`);
+      continue;
+    }
+    const fields = entry?.fields ?? {};
+    if (typeof fields !== 'object' || Array.isArray(fields)) {
+      problems.push(`${svg}：fields 必须是「字段 → 文字」的对象。`);
+      continue;
+    }
+    slides[svg] = { templateSlide: entry.templateSlide, fields };
+  }
+  const append = [];
+  (Array.isArray(raw?.append) ? raw.append : []).forEach((entry, index) => {
+    if (!Number.isInteger(entry?.templateSlide) || entry.templateSlide < 1) {
+      problems.push(`append[${index}]：templateSlide 必须是 ≥1 的整数。`);
+      return;
+    }
+    append.push({ templateSlide: entry.templateSlide, fields: entry?.fields ?? {} });
+  });
+  return { present: true, plan: { template, slides, append }, problems, file };
+}
+
+async function spliceNative(context, project, deckPath, outPath, native, svgs, signal) {
+  const templatePath = path.isAbsolute(native.template)
+    ? native.template
+    : path.join(project, native.template);
+  if (!(await exists(templatePath))) {
+    throw new Error(`原生页模板不存在：${templatePath}。改 ${NATIVE_PLAN_FILE} 里的 template。`);
+  }
+  if (!detectPowerPoint()) {
+    throw new Error(
+      '原生页拼接需要 Microsoft PowerPoint：没有找到 POWERPNT.EXE。装 PowerPoint，或用环境变量 DECK_POWERPOINT 指向它；否则先删掉 native_plan.json 走纯矢量导出。',
+    );
+  }
+  const replace = [];
+  for (let index = 0; index < svgs.length; index += 1) {
+    const entry = native.slides[svgs[index]];
+    if (!entry) continue;
+    replace.push({ deckSlide: index + 1, templateSlide: entry.templateSlide, fields: entry.fields });
+  }
+  if (replace.length === 0 && native.append.length === 0) {
+    throw new Error(`${NATIVE_PLAN_FILE} 里没有可拼接的页：至少写一个 slides 条目或 append 条目。`);
+  }
+  const dir = path.join(project, 'validation', 'native');
+  await ensureDir(dir);
+  // PowerPoint's COM Open/SaveAs reject non-ASCII paths with a bogus
+  // "Filename cannot exceed 255 characters"; splice in an ASCII work dir and
+  // copy the result to the real (often Chinese) file name afterwards.
+  const workDeck = path.join(dir, 'deck.pptx');
+  const workTemplate = path.join(dir, 'template.pptx');
+  const workOut = path.join(dir, 'spliced.pptx');
+  await fs.copyFile(deckPath, workDeck);
+  await fs.copyFile(templatePath, workTemplate);
+  const specFile = path.join(dir, 'splice-plan.json');
+  const spec = { deck: workDeck, template: workTemplate, out: workOut, replace, append: native.append };
+  await fs.writeFile(specFile, JSON.stringify(spec, null, 2), 'utf8');
+  const script = path.join(here, 'scripts', 'native-splice.ps1');
+  const result = await runPowerShell(context, script, ['-PlanFile', specFile], {
+    cwd: project,
+    signal,
+    timeoutMs: Math.max(context.timeoutMs, 300000),
+  });
+  const stdout = String(result.stdout ?? '');
+  if (result.code !== 0 || /FAILED/.test(stdout) || !(await exists(workOut))) {
+    throw failed(result, '原生页拼接');
+  }
+  await ensureDir(path.dirname(outPath));
+  await fs.copyFile(workOut, outPath);
+  const fields = stdout
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('field '))
+    .map((line) => line.slice(6).trim());
+  return {
+    output: outPath,
+    template: templatePath,
+    replaced: replace.map((entry) => entry.deckSlide),
+    appended: native.append.length,
+    fields,
+    slides: Number((/OK slides=(\d+)/.exec(stdout) ?? [])[1] ?? 0),
   };
 }
 
@@ -1285,6 +1885,23 @@ async function actionExport(config, project, args) {
   const lock = path.join(project, 'spec_lock.md');
   if (!(await exists(lock))) {
     throw new Error('缺少 spec_lock.md；先 deck init 或补锁文件。');
+  }
+
+  // A page that already overflows its slot must not reach PPTX: the layout does
+  // not wrap, it clips, and the user only finds out on a projector. Run before
+  // the quality gate so a broken contract fails fast instead of after python.
+  const plan = await pagePlanAudit(project, {
+    profile: await projectProfile(project, args.profile ?? config.defaultProfile),
+    svgFiles: svgs,
+  });
+  if (plan.violations.length) {
+    throw new Error(
+      `字数契约未通过（${plan.violations.length} 处），导出会带上超版文案：\n` +
+        formatViolations(plan.violations, 6)
+          .map((line) => `- ${line}`)
+          .join('\n') +
+        `\n改 page_plan.json 或改文案；确要强行导出，先删掉 ${PLAN_FILE}。`,
+    );
   }
 
   const quality = await runQuality(config, project, args.__signal);
@@ -1307,7 +1924,19 @@ async function actionExport(config, project, args) {
   }
 
   const converter = path.join(config.skillRoot, 'scripts', 'svg_to_pptx.py');
-  const convertArgs = [project, '-o', out];
+  let convertSource = project;
+  let mixedInfo = null;
+  if (args.mixed) {
+    const rawPlan = await readPagePlan(project);
+    const theme = resolveTheme(args, rawPlan.plan, await lockThemeId(project), await projectProfile(project, args.profile), await reportTheme(project));
+    mixedInfo = await buildMixedProject(config, project, theme, svgs, rawPlan.plan, args.__signal);
+    convertSource = mixedInfo.dir;
+    // The converter refuses a release export without a fresh final report, and
+    // the composed pages deserve the same gate as the vector originals.
+    const mixedQuality = await runQuality(config, convertSource, args.__signal);
+    if (mixedQuality.code !== 0) throw failed(mixedQuality, '混合页质量门');
+  }
+  const convertArgs = [convertSource, '-o', out];
   const animConfig = path.join(project, 'animations.json');
   if (await exists(animConfig)) convertArgs.push('--animation-config', animConfig);
   const convert = await runPython(config, converter, convertArgs, {
@@ -1365,20 +1994,97 @@ async function actionExport(config, project, args) {
     }
   }
 
+  const native = await readNativePlan(project);
+  let nativeInfo = null;
+  if (native.present && native.problems.length) {
+    warnings.push(
+      `${NATIVE_PLAN_FILE} 有 ${native.problems.length} 处问题，原生页已跳过：\n- ${native.problems.slice(0, 4).join('\n- ')}`,
+    );
+  } else if (native.present) {
+    if (!detectPowerPoint()) {
+      warnings.push(
+        '原生页跳过：没找到 Microsoft PowerPoint（POWERPNT.EXE）。装 PowerPoint 或设 DECK_POWERPOINT；纯矢量页已照常导出。',
+      );
+    } else {
+      const nativeOut = out.replace(/\.pptx$/i, '-native.pptx');
+      if ((await exists(nativeOut)) && !args.force) {
+        warnings.push(`原生页已存在：${nativeOut}。传 force=true 覆盖。`);
+      } else {
+        try {
+          nativeInfo = await spliceNative(config, project, out, nativeOut, native.plan, svgs, args.__signal);
+          artifacts.push(await artifact('pptx', nativeOut));
+        } catch (error) {
+          warnings.push(`原生页拼接失败：${String(error?.message || error)}`);
+        }
+      }
+    }
+  } else {
+    warnings.push(`原生页：没有 ${NATIVE_PLAN_FILE}，本次只导出矢量页。要封面/目录用学院官方模板，按 SKILL.md §2.3d 写一份。`);
+  }
+
+  const modeLine = mixedInfo
+    ? `混合导出：${mixedInfo.mixed.length} 页背景已栅格化、文字保留可编辑${mixedInfo.copied.length ? `，${mixedInfo.copied.length} 页按原矢量页复制` : ''}；体积会比纯矢量版大数倍。`
+    : '';
+  const nativeLine = nativeInfo
+    ? `原生页：替换 ${nativeInfo.replaced.length} 页、追加 ${nativeInfo.appended} 页，共 ${nativeInfo.slides} 页 → ${path.basename(nativeInfo.output)}。3D/视频页原样保留。`
+    : '';
   return {
     ok: true,
     action: 'export',
     project,
-    message: `已导出 PPTX${extra.length ? ` + ${extra.join('/').toUpperCase()}` : ''}。`,
+    message: `已导出 PPTX${extra.length ? ` + ${extra.join('/').toUpperCase()}` : ''}。${modeLine ? `\n${modeLine}` : ''}${nativeLine ? `\n${nativeLine}` : ''}`,
     artifacts,
     data: {
       output: out,
       format,
+      mixed: Boolean(mixedInfo),
+      mixedPages: mixedInfo ? { mixed: mixedInfo.mixed, copied: mixedInfo.copied } : null,
+      native: nativeInfo,
+      nativePlan: native.present ? { plan: native.plan, problems: native.problems } : null,
       warnings,
       quality: tail(quality),
       convert: tail(convert),
       fontFix: tail(fixed),
     },
+  };
+}
+
+async function actionEdit(config, project, args) {
+  const read = await readPagePlan(project);
+  if (!read.present) {
+    throw new Error('没有 page_plan.json：先 deck brief 拿槽位预算，写好页面契约再来编辑。');
+  }
+  const pages = Array.isArray(read.plan?.pages) ? read.plan.pages : [];
+  if (pages.length === 0) throw new Error('page_plan.json 里没有 pages：先补页面契约。');
+  const profile = await projectProfile(project, args.profile ?? config.defaultProfile);
+  const theme = resolveTheme(args, read.plan, await lockThemeId(project), profile, await reportTheme(project));
+  const modules = {
+    themes: await readText(path.join(here, 'lib/themes.mjs')),
+    contracts: await readText(path.join(here, 'lib/page-contracts.mjs')),
+    skeleton: await readText(path.join(here, 'lib/skeleton.mjs')),
+  };
+  const title = (args.title || '').trim() || (await readSourceTitle(project)) || path.basename(project);
+  const files = pages.map((page, index) =>
+    page.file || `${String(index + 1).padStart(2, '0')}_${page.archetype}.svg`,
+  );
+  const html = buildEditorHtml({ title, profile, themeId: theme.id, plan: read.plan, files, modules });
+  const out = args.output
+    ? path.isAbsolute(args.output)
+      ? args.output
+      : path.join(project, args.output)
+    : path.join(project, 'exports', `${slugify(title)}-edits.html`);
+  await ensureDir(path.dirname(out));
+  if ((await exists(out)) && !args.force) {
+    throw new Error(`编辑器已存在：${out}。传 force=true 重新生成（会覆盖）。`);
+  }
+  await fs.writeFile(out, html, 'utf8');
+  return {
+    ok: true,
+    action: 'edit',
+    project,
+    message: `已生成单文件编辑器（${pages.length} 页，主题 ${theme.label}）：${path.basename(out)}\n用 Chrome 或 Edge 打开它；第一次点「保存到项目目录」选这个 deck 的项目根目录（含 page_plan.json）。保存会同时写 page_plan.json 与 svg_output/，之后跑 deck check 复核。`,
+    artifacts: [await artifact('html', out)],
+    data: { output: out, pages: pages.length, theme: theme.id, files },
   };
 }
 
@@ -1495,10 +2201,13 @@ function deckTool(config) {
       action: {
         type: 'string',
         required: true,
-        enum: ['propose', 'init', 'status', 'check', 'export', 'html', 'animate'],
+        enum: ['propose', 'init', 'status', 'brief', 'scaffold', 'edit', 'check', 'export', 'html', 'animate'],
         description:
           'propose writes three candidate visual directions (ask the user first, then init option=<id>); ' +
-          'init scaffolds a project; status reports files; check runs the SVG quality gate (optionally visual review); ' +
+          'init scaffolds a project; status reports files; brief prints the page-contract slot budgets (and audits page_plan.json when present); ' +
+          'scaffold renders svg_output/ pages from page_plan.json using one visual language (theme); ' +
+          'edit writes a single-file browser editor for page_plan.json and svg_output/ (no server; save with Chrome/Edge); ' +
+          'check runs the SVG quality gate plus font/image/copy audit (optionally visual review); ' +
           'export builds PPTX and repairs CJK fonts, optionally PDF/PNG; html builds a keyboard-navigable single-file deck; ' +
           'animate runs the animation proposal/write gate.',
       },
@@ -1529,6 +2238,14 @@ function deckTool(config) {
           'literary (warm-paper / ink-water / desert-ochre). ' +
           'Pass it to init so spec_lock colors and the direction note follow the choice.',
       },
+      theme: {
+        type: 'string',
+        enum: [...THEME_IDS],
+        description:
+          'Visual language for action=scaffold. Defaults to page_plan.json theme, then spec_lock "- theme:", ' +
+          'then the profile default (formal->paper-stamp, campaign->neon-cyan, literary->print-mono). ' +
+          'Same content under two themes is the fastest way to tell whether the layout carries the deck.',
+      },
       force: {
         type: 'boolean',
         description: 'Overwrite an existing project/artifact/animations.json.',
@@ -1541,6 +2258,12 @@ function deckTool(config) {
       review: {
         type: 'boolean',
         description: 'In check, also render PNG previews with visual_review.',
+      },
+      mixed: {
+        type: 'boolean',
+        description:
+          'In export, rasterise each page background with Chrome/Edge and keep native text on top. ' +
+          'Opt-in fallback for backgrounds the vector converter cannot hold; the file grows several times.',
       },
       apply: {
         type: 'boolean',
@@ -1572,6 +2295,9 @@ function deckTool(config) {
       if (action === 'propose') return actionPropose(config, project, callArgs);
       if (action === 'init') return actionInit(config, project, callArgs);
       if (action === 'status') return actionStatus(config, project);
+      if (action === 'brief') return actionBrief(config, project, callArgs);
+      if (action === 'scaffold') return actionScaffold(config, project, callArgs);
+      if (action === 'edit') return actionEdit(config, project, callArgs);
       if (action === 'check') return actionCheck(config, project, callArgs);
       if (action === 'export') return actionExport(config, project, callArgs);
       if (action === 'html') return actionHtml(config, project, callArgs);
@@ -1581,7 +2307,7 @@ function deckTool(config) {
       return {
         card: 'generic',
         title: `Deck ${args.action}: ${path.basename(args.project || '')}`,
-        kind: args.action === 'status' || args.action === 'check' ? 'read' : 'execute',
+        kind: ['status', 'check', 'brief', 'edit'].includes(args.action) ? 'read' : 'execute',
       };
     },
   });

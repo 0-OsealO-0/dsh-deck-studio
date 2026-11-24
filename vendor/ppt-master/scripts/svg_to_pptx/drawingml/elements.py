@@ -1974,7 +1974,13 @@ def _text_line_vertical_extent(
     font_size: float,
 ) -> tuple[float, float, bool]:
     """Return native-math-aware ascent/descent for one authored text line."""
-    ascent = font_size * 0.85
+    # Calibrated against PowerPoint's own layout: PowerPoint places the first
+    # baseline at (frame top + top inset + ~0.98em), while the SVG contract puts
+    # it at the authored baseline.  Estimating 0.85em here left every exported
+    # text block 0.11-0.14em too low (11-14px at 100px).  Measured on Source Han
+    # Sans/Serif, Microsoft YaHei, Arial and Consolas: 0.98em keeps the residual
+    # inside +-2px at 100px.
+    ascent = font_size * 0.98
     descent = font_size * 0.35
     has_inline_formula = False
     from ..native_objects.formula_compiler import (
