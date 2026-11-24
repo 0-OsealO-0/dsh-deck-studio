@@ -663,6 +663,37 @@ try {
     String(badPlanStatus?.message ?? '').slice(0, 200),
   );
 
+  // 4b*. native image fields: a field value that is an image path swaps the
+  //       placeholder for a picture, so a missing file must fail before COM runs.
+  await fs.mkdir(path.join(nativeProject, 'images'), { recursive: true });
+  await fs.writeFile(path.join(nativeProject, 'images', 'logo.png'), 'not really a png', 'utf8');
+  await fs.writeFile(
+    path.join(nativeProject, 'native_plan.json'),
+    JSON.stringify({
+      template: 'templates/missing.pptx',
+      slides: { '01_cover.svg': { templateSlide: 1, fields: { '!!title': '封面', '!!logo': 'images/logo.png' } } },
+    }),
+    'utf8',
+  );
+  const imagePlanStatus = await tool.execute({ action: 'status', project: nativeProject }, {});
+  const imageProblems = imagePlanStatus?.data?.nativePlan?.problems ?? [];
+  record(
+    '图片字段存在时不报错（只检查文件是否存在）',
+    !imageProblems.some((line) => line.includes('!!logo')),
+    imageProblems.join(' | ').slice(0, 200),
+  );
+  await fs.writeFile(
+    path.join(nativeProject, 'native_plan.json'),
+    JSON.stringify({ template: 'templates/missing.pptx', slides: { '01_cover.svg': { templateSlide: 1, fields: { '!!logo': 'images/nope.png' } } } }),
+    'utf8',
+  );
+  const missingImageStatus = await tool.execute({ action: 'status', project: nativeProject }, {});
+  record(
+    '图片字段指向不存在的文件会点名报错',
+    (missingImageStatus?.data?.nativePlan?.problems ?? []).some((line) => line.includes('图片不存在') && line.includes('!!logo')),
+    JSON.stringify(missingImageStatus?.data?.nativePlan?.problems ?? []).slice(0, 240),
+  );
+
   // 5. review without a live-preview server must be a visible failure, not a
   //    green check with no previews.
   const reviewed = await tool.execute({ action: 'check', project, review: true }, {});

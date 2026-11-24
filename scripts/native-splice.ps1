@@ -10,9 +10,9 @@ $app = $null
 $deck = $null
 
 function Set-Fields {
-  param($Shape, $Map, $SlideIndex, $Log)
+  param($Shape, $Slide, $Map, $SlideIndex, $Log, $InGroup = $false)
   if ($Shape.Type -eq 6) {
-    foreach ($child in $Shape.GroupItems) { Set-Fields -Shape $child -Map $Map -SlideIndex $SlideIndex -Log $Log }
+    foreach ($child in $Shape.GroupItems) { Set-Fields -Shape $child -Slide $Slide -Map $Map -SlideIndex $SlideIndex -Log $Log -InGroup $true }
     return
   }
   if ($Shape.HasTable -eq -1) {
@@ -21,8 +21,13 @@ function Set-Fields {
         $t = $cell.Shape.TextFrame.TextRange.Text.Trim()
         foreach ($key in $Map.Keys) {
           if ($t -eq $key -or $t.Contains($key)) {
-            $cell.Shape.TextFrame.TextRange.Text = $t.Replace($key, $Map[$key])
-            $Log.Add("slide $SlideIndex : $key -> $($Map[$key])") | Out-Null
+            $cellValue = $Map[$key]
+            if ($cellValue -is [System.Management.Automation.PSCustomObject]) {
+              $Log.Add("slide $SlideIndex : $key -> (表格里放不了图片，已跳过)") | Out-Null
+              continue
+            }
+            $cell.Shape.TextFrame.TextRange.Text = $t.Replace($key, [string]$cellValue)
+            $Log.Add("slide $SlideIndex : $key -> $cellValue") | Out-Null
           }
         }
       }
@@ -33,11 +38,27 @@ function Set-Fields {
   if ($Shape.TextFrame.HasText -ne -1) { return }
   $text = $Shape.TextFrame.TextRange.Text.Trim()
   foreach ($key in $Map.Keys) {
-    if ($text -eq $key -or $text.Contains($key)) {
-      $Shape.TextFrame.TextRange.Text = $text.Replace($key, $Map[$key])
-      $Log.Add("slide $SlideIndex : $key -> $($Map[$key])") | Out-Null
+    if (-not ($text -eq $key -or $text.Contains($key))) { continue }
+    $value = $Map[$key]
+    # 值是 {kind:"image", path:"…"} 时把占位替换成图片：顶层形状换成真正的
+    # 图片对象（可裁切、可换）；组合里的子形状不能删，退化为图片填充。
+    if ($value -is [System.Management.Automation.PSCustomObject] -and $value.kind -eq 'image') {
+      if ($InGroup) {
+        $Shape.Fill.UserPicture([string]$value.path)
+        $Shape.TextFrame.TextRange.Text = ''
+      }
+      else {
+        # COM returns these as doubles; AddPicture needs singles or PowerPoint
+        # drops the geometry and inserts the picture at its own default size.
+        $Slide.Shapes.AddPicture([string]$value.path, 0, -1, [single]$Shape.Left, [single]$Shape.Top, [single]$Shape.Width, [single]$Shape.Height) | Out-Null
+        $Shape.Delete()
+      }
+      $Log.Add("slide $SlideIndex : $key -> <image $([System.IO.Path]::GetFileName([string]$value.path))>") | Out-Null
       return
     }
+    $Shape.TextFrame.TextRange.Text = $text.Replace($key, [string]$value)
+    $Log.Add("slide $SlideIndex : $key -> $value") | Out-Null
+    return
   }
 }
 
@@ -45,7 +66,10 @@ function ConvertTo-FieldMap {
   param($Fields)
   $map = @{}
   if ($null -eq $Fields) { return $map }
-  foreach ($p in $Fields.PSObject.Properties) { $map[$p.Name] = [string]$p.Value }
+  foreach ($p in $Fields.PSObject.Properties) {
+    if ($p.Value -is [System.Management.Automation.PSCustomObject]) { $map[$p.Name] = $p.Value }
+    else { $map[$p.Name] = [string]$p.Value }
+  }
   return $map
 }
 
@@ -70,7 +94,9 @@ try {
     $deck.Slides.InsertFromFile([string]$plan.template, $target - 1, [int]$entry.templateSlide, [int]$entry.templateSlide) | Out-Null
     $deck.Slides.Item($target + 1).Delete()
     $fields = ConvertTo-FieldMap $entry.fields
-    foreach ($shape in $deck.Slides.Item($target).Shapes) { Set-Fields -Shape $shape -Map $fields -SlideIndex $target -Log $log }
+    $slide = $deck.Slides.Item($target)
+    # 换图片会删除并新建形状，先快照一份再遍历，避免边改边遍历跳过元素。
+    foreach ($shape in @($slide.Shapes)) { Set-Fields -Shape $shape -Slide $slide -Map $fields -SlideIndex $target -Log $log }
   }
 
   foreach ($entry in @($plan.append)) {
@@ -80,7 +106,8 @@ try {
     $created = $deck.Slides.Count
     $deck.Slides.Item($created).MoveTo($deck.Slides.Count) | Out-Null
     $fields = ConvertTo-FieldMap $entry.fields
-    foreach ($shape in $deck.Slides.Item($created).Shapes) { Set-Fields -Shape $shape -Map $fields -SlideIndex $created -Log $log }
+    $appended = $deck.Slides.Item($created)
+    foreach ($shape in @($appended.Shapes)) { Set-Fields -Shape $shape -Slide $appended -Map $fields -SlideIndex $created -Log $log }
   }
 
   $deck.SaveAs([string]$plan.out)

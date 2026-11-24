@@ -1783,6 +1783,15 @@ const NATIVE_PLAN_FILE = 'native_plan.json';
 // The spliced deck keeps native PowerPoint pages (3D models, video, SmartArt)
 // that python-pptx cannot copy part-for-part. The plan says which exported page
 // a template slide replaces, and which template slides to append.
+// A field value that points at a picture replaces the placeholder shape with
+// that picture instead of swapping text. Same placeholders, same JSON file —
+// "!!logo": "images/校徽.png" is the whole syntax.
+const IMAGE_FIELD_RE = /\.(?:png|jpe?g|webp|gif|bmp)$/i;
+
+function looksLikeImageField(value) {
+  return typeof value === 'string' && IMAGE_FIELD_RE.test(value.trim());
+}
+
 async function readNativePlan(project) {
   const file = path.join(project, NATIVE_PLAN_FILE);
   if (!(await exists(file))) return { present: false, plan: null, problems: [], file };
@@ -1805,6 +1814,13 @@ async function readNativePlan(project) {
     if (typeof fields !== 'object' || Array.isArray(fields)) {
       problems.push(`${svg}：fields 必须是「字段 → 文字」的对象。`);
       continue;
+    }
+    for (const [key, value] of Object.entries(fields)) {
+      if (!looksLikeImageField(value)) continue;
+      const target = path.isAbsolute(value) ? value : path.join(project, String(value).trim());
+      if (!(await exists(target))) {
+        problems.push(`${svg}：字段 ${key} 的图片不存在：${String(value).trim()}`);
+      }
     }
     slides[svg] = { templateSlide: entry.templateSlide, fields };
   }
@@ -1831,11 +1847,23 @@ async function spliceNative(context, project, deckPath, outPath, native, svgs, s
       '原生页拼接需要 Microsoft PowerPoint：没有找到 POWERPNT.EXE。装 PowerPoint，或用环境变量 DECK_POWERPOINT 指向它；否则先删掉 native_plan.json 走纯矢量导出。',
     );
   }
+  const fieldPlan = (fields) => {
+    const out = {};
+    for (const [key, value] of Object.entries(fields ?? {})) {
+      if (looksLikeImageField(value)) {
+        const target = path.isAbsolute(value) ? value : path.join(project, String(value).trim());
+        out[key] = { kind: 'image', path: target };
+      } else {
+        out[key] = String(value);
+      }
+    }
+    return out;
+  };
   const replace = [];
   for (let index = 0; index < svgs.length; index += 1) {
     const entry = native.slides[svgs[index]];
     if (!entry) continue;
-    replace.push({ deckSlide: index + 1, templateSlide: entry.templateSlide, fields: entry.fields });
+    replace.push({ deckSlide: index + 1, templateSlide: entry.templateSlide, fields: fieldPlan(entry.fields) });
   }
   if (replace.length === 0 && native.append.length === 0) {
     throw new Error(`${NATIVE_PLAN_FILE} 里没有可拼接的页：至少写一个 slides 条目或 append 条目。`);
@@ -1851,7 +1879,8 @@ async function spliceNative(context, project, deckPath, outPath, native, svgs, s
   await fs.copyFile(deckPath, workDeck);
   await fs.copyFile(templatePath, workTemplate);
   const specFile = path.join(dir, 'splice-plan.json');
-  const spec = { deck: workDeck, template: workTemplate, out: workOut, replace, append: native.append };
+  const append = native.append.map((entry) => ({ templateSlide: entry.templateSlide, fields: fieldPlan(entry.fields) }));
+  const spec = { deck: workDeck, template: workTemplate, out: workOut, replace, append };
   await fs.writeFile(specFile, JSON.stringify(spec, null, 2), 'utf8');
   const script = path.join(here, 'scripts', 'native-splice.ps1');
   const result = await runPowerShell(context, script, ['-PlanFile', specFile], {

@@ -209,7 +209,9 @@ deck(action="export", project="...", mixed=true)
 - `slides`：把导出的第 N 页**换成**模板里的某一页（`templateSlide` 从 1 起，按文件顺序对应 `svg_output/`）。
 - `append`：在末尾**追加**模板页（目录、致谢这类不需要改字的位置）。
 - `fields`：把模板里写着 `!!字段名` 的文本框换成你的文案，保留原有字号/字重；组合里的文本框和表格单元格也会被找到。
-- 只替换文字，不搬布局：模板里的 3D 模型、视频、SmartArt 原样保留（COM `Slides.InsertFromFile` 整页复制）。
+- `fields` 的值如果是图片路径（`png/jpg/webp` 结尾且文件存在，如 `"!!logo": "images/校徽.png"`），就把那个占位**换成图片**：顶层形状变 PowerPoint 原生图片对象（位置大小沿用占位、可裁切可换），组合里的子形状退化为图片填充（删不掉子形状），表格单元格放不了图片会跳过并记一行日志。
+- 只替换内容，不搬布局：模板里的 3D 模型、视频、SmartArt 原样保留（COM `Slides.InsertFromFile` 整页复制）。
+- **图片占位请用矩形或图片占位符，不要用会自动缩放的文本框**：插入时 PowerPoint 会按版式缩放整页，自动缩放文本框的宽高会被文字撑成另一个尺寸，图片就跟着变小、位置也偏。实测矩形占位 115.2×115.2pt 缩放 1.25 倍后图片正好 144×144pt；同样内容的 autofit 文本框只剩 76×34.5pt。
 
 **依赖与降级**（三种情况都会在 `check`/`status` 里提前说，不会导到一半才炸）：
 
@@ -225,6 +227,8 @@ deck(action="export", project="...", mixed=true)
 - `InsertFromFile` 的 `Index` 是"插在这一页之后"，不是"插成第 N 页"：替换第 N 页要传 `N-1`，再删掉被挤下去的 `N+1`。
 - PowerShell 函数参数用 `[string]$Spec` 命名后，再把解析出的对象赋给 `$spec` 会被强制转回字符串（大小写不敏感）→ 参数名和变量名必须不同。
 - `.ps1` 含中文必须存 UTF-8 with BOM；脚本 `finally` 里必须关演示文稿并 `Stop-Process POWERPNT`，否则残留实例会让下一次 `Open` 拿到 0 页。
+- COM 读出来的 `Left/Top/Width/Height` 是 double，直接塞给 `AddPicture` 会被丢掉、图片按默认尺寸落在别处；必须逐个 `[single]` 转换。
+- 换图片是"新建图片 + 删旧形状"，遍历形状前先 `@($slide.Shapes)` 快照，否则边删边遍历会跳元素。
 
 ### 2.4 大纲红队（写 SVG 之前，不可跳过）
 
