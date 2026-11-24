@@ -187,9 +187,9 @@ try {
     String(brief0?.message ?? '').slice(0, 120),
   );
   record(
-    'brief 的 data 带 8 个原型与可编辑骨架',
+    'brief 的 data 带 9 个原型与可编辑骨架',
     Array.isArray(brief0?.data?.archetypes) &&
-      brief0.data.archetypes.length === 8 &&
+      brief0.data.archetypes.length === 9 &&
       Array.isArray(brief0?.data?.skeleton?.pages),
     JSON.stringify(brief0?.data?.archetypes ?? null),
   );
@@ -435,6 +435,34 @@ try {
     '招新大图页缺报名号召会被当成必填缺失',
     heroAudit.violations.some((item) => item.kind === 'missing' && String(item.message).includes('报名')),
     JSON.stringify(heroAudit.violations.map((item) => item.message)),
+  );
+
+  // 4b0c. notice: the class-group notice has a fixed five-part shape, and the
+  //       audit must demand the parts a reader would look for first.
+  const noticeSvg = renderPage(
+    {
+      archetype: 'notice',
+      variant: 'impact',
+      text: { title: '本周五团日活动，全体到场', when: '11-28 14:00', where: '人文楼 302', who: '全班同学', todo: ['带学生证'], note: '请假提前说', contact: '找宣传委员' },
+    },
+    { theme: getTheme('paper-stamp'), pageNumber: 1, total: 2 },
+  );
+  record(
+    '通知页：时间地点对象 + 勾选清单 + 联系人',
+    noticeSvg.includes('id="notice-when"') &&
+      noticeSvg.includes('id="notice-where"') &&
+      noticeSvg.includes('id="notice-todo-1"') &&
+      noticeSvg.includes('id="notice-contact"'),
+    noticeSvg.slice(0, 100),
+  );
+  const noticeAudit = auditPlan(
+    { version: 1, profile: 'formal', pages: [{ file: '01_notice.svg', archetype: 'notice', text: { title: '开会通知', when: '11-28', where: '302', contact: '找班长' } }] },
+    { svgFiles: ['01_notice.svg'], profile: 'formal', images: [] },
+  );
+  record(
+    '通知页缺"对象"会被当成必填缺失',
+    noticeAudit.violations.some((item) => item.kind === 'missing' && String(item.message).includes('对象')),
+    JSON.stringify(noticeAudit.violations.map((item) => item.message)),
   );
 
   // 4b1. takeawayAnchor: the comparison conclusion is pinned by a slot switch
