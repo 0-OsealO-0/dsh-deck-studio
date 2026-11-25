@@ -1,101 +1,164 @@
 # Deck Studio
 
-一个 Host-only 的 DeepSeek Harness 插件，把本机 PPT 工作流收成一个 `deck` 工具：
+把「写内容 → 出草稿页 → 改字换图 → 交付可编辑 PPTX」收成一条链路的 DeepSeek Harness 插件。
 
-- `propose`：出三个候选视觉方向（写 `confirm_ui/direction_options.json`），让用户先选
-- `init`：建项目骨架（`source.md` / `design_spec.md` / `spec_lock.md` / `svg_output` / `exports`）；`option=<id>` 会把选中方向落进 `spec_lock`
-- `status`：看还缺什么，并报告当前探测到的 Python / ppt-master 路径
-- `brief`：给页面契约的槽位预算；有 `page_plan.json` 时逐页报「预算占用 / 超限」
-- `scaffold`：按契约把 10 个原型画成 SVG 草稿，主题七选一（`paper-stamp` / `navy-brief` / `blueprint-seu` / `neon-cyan` / `warm-sand` / `print-mono` / `ink-water`），并把字号阶梯同步进 `spec_lock.md`
-- `edit`：生成单文件浏览器编辑器（无服务端），改文案、切版式强度与主题，保存时直接写回 `page_plan.json` 与 `svg_output/`
-- `check`：跑 SVG 质量门 + 自有自查（字号 / 图片 / 字体）+ 页面契约字数审计，可选 `visual_review` 回渲 PNG
-- `export`：SVG → 可编辑 PPTX，自动修中文字体；若已有 `animations.json` 会自动注入动画；可选 PDF/PNG，`mixed=true` 走混合导出（背景栅格化 + 原生文字）；项目里有 `native_plan.json` 时另存一份 `-native.pptx`，把学院模板的原生封面/目录/3D/视频页拼进去
-- `html`：把 SVG 页面内联成单文件键盘导航演示
-- `animate`：先 DryRun 出提案，确认后 Apply 写 `animations.json`；只对顶层 group 生效
+A host-only DeepSeek Harness plugin that turns a page contract into themed SVG slides and an editable PPTX.
 
-A host-only DeepSeek Harness plugin that wraps the local PPT pipeline into one `deck` tool. See [INSTALL.md](INSTALL.md) for the bilingual install guide.
+![10 个原型 × 7 套主题](docs/stage2-contact-sheet.png)
 
-## 为什么不是“再做一个 PPT 生成器”
+---
 
-生成 SVG 的能力在 `ppt-master` 里已经有了。真正拖后腿的是交付链：
+## 它解决什么
 
-1. OTF 字体 PowerPoint 不认，需要 TTF 家族；
-2. 主题字体被 `FONT_FALLBACK_WIN` 映射成 SimSun/微软雅黑，需要按 `spec_lock` 回写；
-3. 质量门、回渲、PDF 导出、动画注入分散在多个脚本；
-4. 网页 deck 和 PPTX 各做一套，容易分叉。
+做 PPT 的真问题通常不是「画不出好看的页面」，而是后面这四件事：
 
-本插件只做“收口”，不复制生成逻辑。`ppt-master` 以官方 MIT 发行版子集内置在 `vendor/ppt-master`（含 LICENSE 与 SPONSORS，脚本未修改），见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+1. **每页从零排**——没有骨架，页与页之间没有共同的语言，改一页又破另一页。
+2. **文案和版面打架**——标题超了 6 个字只能缩字号，缩到投影看不清。
+3. **改一个字要开设计工具**——交给同学改文案，等于把源文件交出去。
+4. **交付不可用**——导出的 PPTX 是一堆图片，或者中文字体在别人电脑上变成宋体。
+
+Deck Studio 的答案是：**先定页面契约，再由契约生成版面**。文案有槽位和字数上限，版式由主题决定，导出是可编辑的原生文本框。
+
+## 四件事
+
+| 能力 | 说明 |
+| --- | --- |
+| **页面契约** | 项目根目录写 `page_plan.json`：一页一条，声明原型 + 槽位文案。`brief` 给预算，`check` 逐槽核字数，超限直接拦导出 |
+| **骨架 + 主题** | `scaffold` 按契约把 10 个原型画成 SVG，每个原型 2 个变体（`impact` 强主张 / `density` 信息密），7 套主题换一套就是另一种版面语言 |
+| **浏览器改字** | `edit` 生成一个单文件 HTML 编辑器，Chrome/Edge 打开、选一次项目目录，改完直接写回 `page_plan.json` 与 `svg_output/`，不需要起服务 |
+| **可编辑交付** | `export` 出原生文本框的 PPTX（中文自动换 TTF 家族），`mixed=true` 在保真失败时栅格化背景，`native_plan.json` 能把学院官方模板的原生封面/目录/3D/视频页拼进来 |
 
 ## 安装
 
 ```text
-plugin_manager(action="install_bundle", target="D:\\plugins\\dsh-deck-studio")
+plugin_manager(action="install_bundle", target="git+https://github.com/0-OsealO-0/dsh-deck-studio")
 ```
 
-`target` 指向解压后的插件目录，也可以是 `git+https://...`。安装后新会话里应出现 `deck` 工具与 `deck-studio` skill。完整步骤、配置项与排错见 [INSTALL.md](INSTALL.md)。
+装完重启 DSH，新会话里出现 `deck` 工具与 `deck-studio` skill。完整步骤、配置项、排错见 [INSTALL.md](INSTALL.md)。
 
 ## 依赖
 
-- **Python 3.10+**，且 `import pptx` 可用（`pip install python-pptx`）。插件会按
-  `DSH_DECK_PYTHON` → `DSH_PYTHON` → `PYTHON` → DSH 运行时 → 常规安装 → PATH
-  的顺序自动探测，并优先选择能导入 `python-pptx` 的解释器。
-- **内置** `vendor/ppt-master`（`svg_to_pptx.py`、`svg_quality_checker.py`、`visual_review.py`、`animation_config.py`）。
-- **可选** PowerPoint 桌面版（仅 PDF/PNG）、Playwright + Chromium（仅视觉回渲）。
-- **字体**：微软雅黑 / 宋体可用；正式交付建议装思源黑体、思源宋体 TTF。
+| | 需要什么 | 用途 |
+| --- | --- | --- |
+| 必需 | Python 3.10+，且 `python-pptx` 可导入 | 渲染与导出 |
+| 必需 | Node.js 18+（DSH 自带运行时即可） | 插件本体 |
+| 可选 | Microsoft PowerPoint 桌面版 | PDF / PNG、原生页拼接 |
+| 可选 | Playwright + Chromium | `check(review=true)` 视觉回渲 |
+| 可选 | Chrome 或 Edge | `mixed=true` 混合导出、编辑器保存 |
+| 建议 | 思源黑体 / 思源宋体 TTF | 跨机器一致的正式交付 |
 
-所有路径都可在插件 Config 里覆盖（`python`、`skillRoot`、`defaultProfile`、`timeoutMs`），不依赖任何特定用户名或安装位置。
+Python 按 `DSH_DECK_PYTHON` → `DSH_PYTHON` → `PYTHON` → DSH 运行时 → 常规安装 → PATH 的顺序探测，并优先选能 `import pptx` 的那个。浏览器和 PowerPoint 也可用 `DECK_BROWSER` / `DECK_POWERPOINT` 指定。
 
-## 典型用法
+## 五分钟上手
 
 ```text
-deck(action="propose", project="D:\\work\\demo", profile="formal", title="月报", brief="三分钟讲清本月三件事")
-# 用户选定后
-deck(action="init", project="D:\\work\\demo", profile="formal", title="月报", brief="…", option="navy-brief")
-deck(action="brief", project="D:\\work\\demo")      # 拿槽位预算，写 page_plan.json
-deck(action="check", project="D:\\work\\demo", review=true)
-deck(action="export", project="D:\\work\\demo", format="all")
-deck(action="html", project="D:\\work\\demo")
-deck(action="animate", project="D:\\work\\demo", profile="formal")
+deck(action="propose", project="C:\\work\\demo", profile="formal", title="月报", brief="三分钟讲清本月三件事")
+# 用户从三个方向里挑一个
+deck(action="init", project="C:\\work\\demo", profile="formal", title="月报", brief="…", option="navy-brief")
+deck(action="brief", project="C:\\work\\demo")          # 拿槽位预算
+# 按预算写 page_plan.json
+deck(action="scaffold", project="C:\\work\\demo", theme="blueprint-seu")
+deck(action="check", project="C:\\work\\demo")
+deck(action="export", project="C:\\work\\demo", format="all")
 ```
 
-`project` 必须是绝对路径；插件工具没有 cwd。
+`project` 必须是绝对路径——插件工具没有 cwd。
 
-写 SVG 之前先在项目根目录写 `page_plan.json`（页面契约，SKILL.md §2.3）：一页一条，声明原型与槽位文案，`deck brief` 给预算、`deck check` 逐槽核字数，超限进 blockers、`export` 直接拦下。没有 `page_plan.json` 的项目不报错，字数审计跳过。
+`page_plan.json` 长这样：
 
-改文案不用碰 SVG（SKILL.md §2.3b）：`deck(action="edit", project=…)` 生成 `exports/<标题>-edits.html`，Chrome/Edge 打开后选一次项目目录即可保存，写出的 SVG 与 `scaffold` 逐字节相同。
+```json
+{
+  "version": 1,
+  "profile": "formal",
+  "theme": "blueprint-seu",
+  "pages": [
+    { "file": "01_cover.svg", "archetype": "cover", "variant": "impact",
+      "text": { "title": "这学期宣传做了什么", "subtitle": "2026 秋季学期 · 10-26 → 11-24", "meta": "东南大学 · 班级宣传委员" } },
+    { "file": "02_metrics.svg", "archetype": "metrics", "variant": "impact",
+      "text": { "headline": "这一学期的产出", "metrics": ["22 项成品", "4 场活动", "18 版展板"] } }
+  ]
+}
+```
 
-不想每页从零排，就让插件先出草稿页（SKILL.md §2.3a）：`deck(action="scaffold", project=…, theme="blueprint-seu")`。10 个原型 × 2 个变体（`impact` / `density`）× 7 套主题，同一份 `page_plan.json` 换 `theme` 就是另一套版面语言；已存在的 SVG 默认不覆盖，`force=true` 才重画。骨架只管版面关系，不替你判断内容值不值得讲。
+## 十个动作
 
-要放照片（SKILL.md §2.3c）：`cover` 写可选 `image`、`image` 原型写必填 `image`，值用 `images/photo.jpg`；编辑器里有「选图…」。背景里有转换器保不住的东西时，`export(mixed=true)` 把背景栅格化、文字保持可编辑，代价是体积约 3.6×（4 页 21 KB → 75 KB）。
+| 动作 | 作用 | 主要产出 |
+| --- | --- | --- |
+| `propose` | 出三个候选视觉方向 | `confirm_ui/direction_options.json` |
+| `init` | 建项目骨架 | `source.md` / `design_spec.md` / `spec_lock.md` / `svg_output/` |
+| `status` | 看还缺什么、探测到了哪个 Python | — |
+| `brief` | 给页面契约的槽位预算，逐页报占用 | 终端文本 |
+| `scaffold` | 按契约生成 SVG 草稿页 | `svg_output/*.svg` |
+| `edit` | 生成单文件浏览器编辑器 | `exports/<标题>-edits.html` |
+| `check` | 质量门 + 字号/图片/字体自查 + 字数审计 | `validation/svg_quality_report.json` |
+| `export` | SVG → PPTX（可选 PDF/PNG/混合/原生页） | `exports/*.pptx` |
+| `html` | 内联成单文件键盘导航演示 | `exports/*.html` |
+| `animate` | DryRun 提案，确认后写动画 | `animations.json` |
 
-要有学校那套原生封面（SKILL.md §2.3d）：项目根放 `native_plan.json` 指向学院模板，`slides` 把某页换成模板页并替换 `!!字段名`，`append` 追加目录/致谢页。3D 校门模型、宣传片这类 PowerPoint 原生对象会被原样搬过来（COM 整页复制）；没有模板、没有 PowerPoint 都只警告不拦，矢量产物照常产出。
+## 十个页面原型
 
-再往上一轮是**大纲红队**（SKILL.md §2.4）：每页写「主张 / 支撑 / 反问」三行进 `slide_claims.md`，删掉删了不损失什么的页、删掉没有来源的数字。`check` 通过不等于内容值得讲——它还查不了这件事。
+| 原型 | 一句话 | 典型页 |
+| --- | --- | --- |
+| `cover` | 封面：一句主标题 + 时间地点 | 第 1 页 |
+| `statement` | 观点页：一句主张 + 一段支撑 | 判断、结论 |
+| `notice` | 通知页：时间/地点/对象 + 勾选清单 + 联系人 | 群通知、班会 |
+| `image` | 图文页：左文右图 | 作品、现场照片 |
+| `hero` | 招新大图页：整页照片 + 时间地点 + 报名按钮 | 招新、活动宣传 |
+| `metrics` | 数据页：3–4 个大数字 | 工作量、成绩 |
+| `chart` | 柱状图页：3–6 根柱子 | 构成、对比 |
+| `comparison` | 对比页：左右两栏 + 结论条 | 方案 A/B |
+| `process` | 流程页：3–5 步 | 方法、步骤 |
+| `closing` | 收尾页：一句主张 + 1–3 条行动 | 致谢、下一步 |
 
-## 设计边界
+每个原型两个变体：`impact`（字号更大、留白更多）与 `density`（信息更密）。
 
-- 不替代 `ppt-master` 的 Strategist/Executor，也不改它的源码。
-- 不把 HEX/字体塞进 `visual_style`；分层保持“版式语言进 style，配色/字体进 spec_lock”。
-- 动画默认关闭；DryRun 是硬门，防止一键给整套 deck 加飞入。
-- 生成前必须先 `propose` 给方向、用户选定后 `init option=`；用户说"你定"才可以自己挑。
-- `check` 失败时直接列前 5 条错误，并附 `audit` 自查（字号未登记、图片缺失/未登记版权）。
-- 不承诺跨机器字体一致；正式交付优先 PDF。
+## 七套主题
+
+| id | 名字 | 场景 | 底色 |
+| --- | --- | --- | --- |
+| `paper-stamp` | 纸感印章 · 冷白 | 正式汇报 | `#F7F7F4` |
+| `navy-brief` | 深蓝简报 | 正式汇报 | `#0E1B2C` |
+| `blueprint-seu` | 建筑蓝图 · 东南大学 | 学术汇报 | `#EDF1F4` |
+| `neon-cyan` | 霓虹青 · 活动暗厅 | 活动宣传 | `#0A0B0F` |
+| `warm-sand` | 暖沙 · 活动浅底 | 白天群发 | `#FFF6EC` |
+| `print-mono` | 单色印刷 | 文艺、印刷 | `#FFFFFF` |
+| `ink-water` | 水墨 · 宋体 | 文艺、投稿 | `#F4F1E9` |
+
+主题是纯数据（一份约 40 行），新增一套不需要碰渲染器；检查清单见 [docs/theme-fonts.md](docs/theme-fonts.md)。
+
+## 交付链
+
+- **`check`**：SVG 契约（根 viewBox、`data-pptx-*` 标注、禁用元素）+ 字号是否登记 + 图片是否缺失/未登记版权 + 页面契约字数。失败时列前 5 条并给改法。
+- **`export`**：走内置的 `ppt-master`（MIT，未修改）转 PPTX，再修中文字体；每页顶层是一个 group，里面才是原生文本框与形状，文字可选中可编辑。
+- **`mixed=true`**：转换器保不住背景时（复杂渐变、滤镜、部分图片），把背景层栅格化、文字仍保留为原生文本框。代价是体积约 3.6×。
+- **`native_plan.json`**：用学院官方模板替换封面/目录，或追加致谢页；`!!字段名` 占位符会被替换（文字或图片），3D 模型、宣传片这类原生对象随页面一起搬过来。
+
+## 已知限制
+
+- 骨架只管版面关系，**不替你判断内容值不值得讲**；需要内容红队时按 SKILL.md §2.4 写「主张/支撑/反问」。
+- 编辑器只改文字与图片，不做拖拽排版；保存走 File System Access API，只支持 Chromium 系浏览器。
+- `check(review=true)` 依赖 Playwright，缺了会如实报 `ok=false`，不会假装通过。
+- 不承诺跨机器字体一致；正式交付优先 PDF，或把字体嵌进 PPTX。
+- 预览与 PPTX 之间残留约 1px 的字宽差异（页码最明显）。
 
 ## 目录
 
 ```text
 index.js                  Host 插件入口 + deck 工具 + skill provider
-lib/paths.mjs             Python / ppt-master / 运行时自动探测
+lib/page-contracts.mjs    页面契约：原型、槽位、字数与配图审计
+lib/skeleton.mjs          原型渲染器：SVG 生成
+lib/themes.mjs            7 套主题的 token 与字号阶梯
+lib/editor.mjs            单文件浏览器编辑器
+lib/paths.mjs             Python / 浏览器 / PowerPoint 自动探测
 vendor/ppt-master/        内置的官方 ppt-master 脚本（MIT，未修改）
-cordis.patch.yml          bundle patch
 templates/                三套 spec_lock 模板
-scripts/                  fix-pptx-cjk-fonts.py / pptx-export.ps1 / animate-deck.ps1
-skills/deck-studio/       工作流说明
-locale/                   插件卡片文案
+scripts/                  字体修复、PPTX 导出、原生页拼接、冒烟与 QA
+skills/deck-studio/       工作流说明（SKILL.md）
+docs/                     各阶段验收记录与对照图
 INSTALL.md                双语安装、配置与排错
 THIRD_PARTY.md            第三方组件与许可证
 ```
 
 ## 许可证
 
-插件自身 MIT，见 [LICENSE](LICENSE)。内置的 `ppt-master` 同样是 MIT，版权归 Hugo He，完整声明保留在 `vendor/ppt-master/LICENSE`。
+插件自身 MIT，见 [LICENSE](LICENSE)。内置的 `ppt-master` 同为 MIT，版权归 Hugo He，完整声明保留在 `vendor/ppt-master/LICENSE`。`vendor/ppt-master/scripts/svg_to_pptx/drawingml/elements.py` 有一处本地校准（首行基线 0.85em → 0.98em），原因与复测方法见 [docs/vendor-patches.md](docs/vendor-patches.md)。
